@@ -57,3 +57,15 @@ Notes:
 - Monitor logs with `heroku logs --tail`.
 
 Optional: I can add a GitHub Action to auto-deploy to Heroku on push — tell me if you want that.
+
+## Auto-deploy from GitHub to Heroku
+
+This repository includes a GitHub Actions workflow that deploys to Heroku on push to `master` or `main`.
+
+Before using it, add these repository Secrets in GitHub (Settings → Secrets → Actions):
+
+- `HEROKU_API_KEY` — Your Heroku API key (found in Account settings).
+- `HEROKU_APP_NAME` — The Heroku app name (e.g. `my-ai-bot`).
+- `HEROKU_EMAIL` — The email associated with your Heroku account.
+
+Once the secrets are set, pushing to `master`/`main` will trigger the workflow and deploy the app.

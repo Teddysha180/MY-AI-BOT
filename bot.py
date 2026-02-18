@@ -23,13 +23,31 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 HF_KEY = os.getenv("HF_API_KEY")
 
-# Initialize with better error handling
-try:
-    groq_client = Groq(api_key=GROQ_KEY)
-    bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
-except Exception as e:
-    print(f"❌ Failed to initialize: {e}")
-    exit(1)
+# Initialize clients with safer handling so the module can run without keys
+groq_client = None
+bot = None
+
+if GROQ_KEY:
+    try:
+        groq_client = Groq(api_key=GROQ_KEY)
+    except Exception as e:
+        print(f"⚠️ Groq client init warning: {e}")
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Groq client init failed: {e}")
+        groq_client = None
+else:
+    print("⚠️ GROQ_API_KEY not set; Groq features disabled.")
+
+if BOT_TOKEN:
+    try:
+        bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+    except Exception as e:
+        print(f"⚠️ Telegram bot init warning: {e}")
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Telegram bot init failed: {e}")
+        bot = None
+else:
+    print("⚠️ BOT_TOKEN not set; Telegram bot disabled. Set BOT_TOKEN in .env to enable.")
 
 # ============================================================================
 # 📊 LOGGING & ANALYTICS
@@ -346,6 +364,16 @@ class ImageGenerator:
                     logger.info("Creating enhanced text description fallback...")
                     description_prompt = f"Create a detailed visual description for: {clean_prompt}"
                     
+                    if not groq_client:
+                        logger.warning("Groq unavailable: cannot create text fallback description.")
+                        return {
+                            'type': 'text',
+                            'prompt': clean_prompt,
+                            'description': "AI backend not configured. Set GROQ_API_KEY in .env to enable detailed descriptions.",
+                            'emojis': '⚠️',
+                            'suggestion': "Add GROQ_API_KEY to .env and restart the bot."
+                        }
+
                     response = groq_client.chat.completions.create(
                         model="llama-3.3-70b-versatile",
                         messages=[{"role": "user", "content": description_prompt}],
@@ -579,6 +607,10 @@ def handle_search(message):
         Keep it professional, accurate, and formatted for a mobile chat interface."""
         
         try:
+            if not groq_client:
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable search features.")
+                return
+
             # Get response from Groq
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -586,13 +618,13 @@ def handle_search(message):
                 temperature=0.7,
                 max_tokens=500
             )
-            
+
             answer = clean_markdown(response.choices[0].message.content)
-            
+
             # Send result
             result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Nova AI Knowledge Base"
             safe_send_message(message.chat.id, result_text)
-            
+
         except Exception as api_error:
             logger.error(f"Search API error: {api_error}")
             safe_send_message(
@@ -664,18 +696,22 @@ Provide:
 4. Common pitfalls to avoid"""
         
         try:
+            if not groq_client:
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable code analysis.")
+                return
+
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": code_prompt}],
                 temperature=0.3,
                 max_tokens=600
             )
-            
+
             analysis = clean_markdown(response.choices[0].message.content)
-            
+
             result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Nova AI*"
             safe_send_message(message.chat.id, result_text)
-            
+
         except Exception as api_error:
             logger.error(f"Code API error: {api_error}")
             safe_send_message(
@@ -980,6 +1016,10 @@ def handle_voice(message):
         
         # Transcribe with Groq Whisper
         with open(temp_filename, "rb") as audio_file:
+            if not groq_client:
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable voice transcription.")
+                return
+
             transcription = groq_client.audio.transcriptions.create(
                 file=(temp_filename, audio_file.read()),
                 model="whisper-large-v3",
@@ -1022,6 +1062,10 @@ def handle_photo(message):
         prompt = message.caption if message.caption else "Describe this image in detail and tell me what you see."
         
         # Analyze with Groq Vision
+        if not groq_client:
+            safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable vision features.")
+            return
+
         response = groq_client.chat.completions.create(
             model="llama-3.2-11b-vision-preview",
             messages=[
@@ -1040,11 +1084,11 @@ def handle_photo(message):
             ],
             max_tokens=500
         )
-        
+
         analysis = clean_markdown(response.choices[0].message.content)
-        
+
         safe_send_message(message.chat.id, f"🖼️ *Image Analysis:*\n\n{analysis}")
-        
+
         analytics.log_request(message.chat.id, 500, "vision_analysis")
         
     except Exception as e:
@@ -1077,6 +1121,10 @@ def handle_all_messages(message):
         bot.send_chat_action(message.chat.id, 'typing')
         
         try:
+            if not groq_client:
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable chat responses.")
+                return
+
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
@@ -1107,12 +1155,15 @@ def handle_all_messages(message):
             analytics.log_request(message.chat.id, tokens_used, "chat")
             
         except Exception as api_error:
-            logger.error(f"Chat API error: {api_error}")
-            safe_send_message(
-                message.chat.id,
-                "🤖 *I'm thinking...*\n\n"
-                "Please try again in a moment or rephrase your question."
-            )
+            logger.error(f"Chat API error: {api_error}\n{traceback.format_exc()}")
+            try:
+                safe_send_message(
+                    message.chat.id,
+                    "🤖 *I'm thinking...*\n\n"
+                    "Please try again in a moment or rephrase your question."
+                )
+            except Exception:
+                logger.error("Failed to send fallback message after chat error.")
         
     except Exception as e:
         logger.error(f"Message handler error: {e}\n{traceback.format_exc()}")

@@ -1328,11 +1328,42 @@ if __name__ == "__main__":
     print("💡 Tip: Try /draw a beautiful landscape")
     
     try:
-        bot.infinity_polling(
-            timeout=30,
-            long_polling_timeout=5,
-            logger_level=logging.INFO
-        )
+        # Ensure any existing webhook is removed before starting polling to avoid
+        # Telegram 409 Conflict errors when another updater or webhook exists.
+        def _delete_telegram_webhook():
+            if not BOT_TOKEN:
+                return
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+                resp = requests.post(url, timeout=10)
+                logger.info(f"deleteWebhook: {resp.status_code} {resp.text}")
+            except Exception as _e:
+                logger.warning(f"Failed to call deleteWebhook: {_e}")
+
+        # Attempt to remove webhook once before starting
+        _delete_telegram_webhook()
+
+        # Run polling in a loop so transient 409/other errors try to self-heal.
+        while True:
+            try:
+                bot.infinity_polling(
+                    timeout=30,
+                    long_polling_timeout=5,
+                    logger_level=logging.INFO
+                )
+                break
+            except Exception as e:
+                # If conflict due to other getUpdates request, try deleting webhook and retry
+                err_text = str(e)
+                logger.error(f"Polling exception: {err_text}\n{traceback.format_exc()}")
+                if '409' in err_text or 'Conflict' in err_text:
+                    logger.warning("Detected Telegram 409 conflict, attempting to delete webhook and retry polling...")
+                    _delete_telegram_webhook()
+                    time.sleep(5)
+                    continue
+                # For other exceptions, wait and retry once
+                time.sleep(5)
+                continue
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped by user.")
     except Exception as e:

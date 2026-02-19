@@ -11,7 +11,23 @@ import threading
 import traceback
 import time
 import base64
+from flask import Flask
+from threading import Thread
 from dotenv import load_dotenv
+
+# Initialize Flask app for health checks (required by Hugging Face)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    # Use port 7860 as it's the default for Hugging Face Spaces
+    app.run(host='0.0.0.0', port=7860)
+
+# Start Flask in a background thread
+Thread(target=run_flask, daemon=True).start()
 
 # Load environment variables
 load_dotenv()

@@ -1,3 +1,12 @@
+---
+title: My Ai Bot
+emoji: 🤖
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # My Ai Bot
 
 This repository contains a simple AI bot project.

@@ -49,6 +49,57 @@ if BOT_TOKEN:
 else:
     print("⚠️ BOT_TOKEN not set; Telegram bot disabled. Set BOT_TOKEN in .env to enable.")
 
+# If bot couldn't be initialized (missing token or init error), provide a lightweight
+# dummy object with the decorator APIs used in this module so importing/running the
+# script won't fail at the @bot.message_handler / @bot.callback_query_handler lines.
+if not bot:
+    class _DummyBot:
+        def message_handler(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def callback_query_handler(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        # Basic methods used across the code. They are no-ops when the real bot
+        # isn't available.
+        def send_message(self, *args, **kwargs):
+            print("[DummyBot] send_message called; BOT_TOKEN not configured.")
+            return None
+
+        def send_photo(self, *args, **kwargs):
+            print("[DummyBot] send_photo called; BOT_TOKEN not configured.")
+            return None
+
+        def delete_message(self, *args, **kwargs):
+            return None
+
+        def get_file(self, *args, **kwargs):
+            raise RuntimeError("DummyBot: no file support when BOT_TOKEN is not set")
+
+        def download_file(self, *args, **kwargs):
+            raise RuntimeError("DummyBot: no download support when BOT_TOKEN is not set")
+
+        def send_chat_action(self, *args, **kwargs):
+            return None
+
+        def edit_message_text(self, *args, **kwargs):
+            return None
+
+        def answer_callback_query(self, *args, **kwargs):
+            return None
+
+        def get_me(self):
+            return type("Me", (), {"username": "(disabled_bot)"})
+
+        def infinity_polling(self, *args, **kwargs):
+            print("[DummyBot] infinity_polling skipped: BOT_TOKEN not configured.")
+
+    bot = _DummyBot()
+
 # ============================================================================
 # 📊 LOGGING & ANALYTICS
 # ============================================================================
@@ -56,7 +107,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
     handlers=[
-        logging.FileHandler('nova_elite.log', encoding='utf-8'),
+        logging.FileHandler('artovix.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -144,7 +195,7 @@ analytics = Analytics()
 # ============================================================================
 class AdvancedMemory:
     def __init__(self):
-        self.memory_file = "nova_memory.json"
+        self.memory_file = "artovix_memory.json"
         self.lock = threading.Lock()
         
     def load(self):
@@ -199,7 +250,7 @@ memory = AdvancedMemory()
 # ============================================================================
 # 🎭 PERSONA & SYSTEM
 # ============================================================================
-SYSTEM_PROMPT = """You are Nova, an elite AI assistant in 2026.
+SYSTEM_PROMPT = """You are Artovix, an elite AI assistant in 2026.
 
 PERSONALITY:
 - Brilliant futurist AI
@@ -402,10 +453,10 @@ class ImageGenerator:
 # ============================================================================
 # 🚀 START COMMAND (FIXED)
 # ============================================================================
-@bot.message_handler(commands=['start', 'nova', 'hello'])
+@bot.message_handler(commands=['start', 'artovix', 'hello'])
 def start_command(message):
     try:
-        welcome_msg = """🌟 *Welcome to Nova 2026!* 🌟
+        welcome_msg = """🌟 *Welcome to Artovix 2026!* 🌟
 
 I'm your AI assistant powered by Groq's Llama 3.3 70B!
 
@@ -517,7 +568,7 @@ def handle_draw(message):
                         message.chat.id,
                         result,
                         caption=f"🎨 *AI Generated:* {prompt}\n\n"
-                               f"✨ Powered by Nova AI | {datetime.now().strftime('%H:%M')}"
+                                   f"✨ Powered by Artovix AI | {datetime.now().strftime('%H:%M')}"
                     )
                     logger.info(f"✓ Image sent to {message.chat.id}")
                 except Exception as e:
@@ -622,7 +673,7 @@ def handle_search(message):
             answer = clean_markdown(response.choices[0].message.content)
 
             # Send result
-            result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Nova AI Knowledge Base"
+            result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
             safe_send_message(message.chat.id, result_text)
 
         except Exception as api_error:
@@ -709,7 +760,7 @@ Provide:
 
             analysis = clean_markdown(response.choices[0].message.content)
 
-            result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Nova AI*"
+            result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
             safe_send_message(message.chat.id, result_text)
 
         except Exception as api_error:
@@ -753,7 +804,7 @@ def handle_stats(message):
         if not breakdown_text:
             breakdown_text = "• No requests today yet."
             
-        stats_msg = f"""📊 *Nova Analytics Dashboard*
+        stats_msg = f"""📊 *Artovix Analytics Dashboard*
 
 *Live Metrics:*
 • **RPM:** {metrics['RPM']} requests/minute
@@ -764,7 +815,7 @@ def handle_stats(message):
 {breakdown_text}
 
 *System Status:*
-• 🤖 Version: Nova 2026.2.0
+• 🤖 Version: Artovix 2026.2.0
 • 🧠 Models: Llama 3.3, 3.2 Vision, Whisper
 • 💬 Active Users: {len(memory.load())}
 • 🕐 Server Time: {datetime.now().strftime('%H:%M:%S')}
@@ -802,7 +853,8 @@ def handle_reset(message):
 @bot.message_handler(commands=['status'])
 def handle_status(message):
     try:
-        status_msg = f"""✅ *Nova Status Report*
+        status_msg = f"""✅ *Artovix Status Report*
+
 
 *Core Systems:*
 • 🤖 AI Engine: ✅ Online
@@ -821,12 +873,12 @@ def handle_status(message):
         safe_send_message(message.chat.id, status_msg)
     except Exception as e:
         logger.error(f"Status error: {e}")
-        safe_send_message(message.chat.id, "✅ Nova is running!")
+        safe_send_message(message.chat.id, "✅ Artovix is running!")
 
 @bot.message_handler(commands=['help'])
 def handle_help(message):
     try:
-        help_text = """🔧 *Nova Command Reference*
+        help_text = """🔧 *Artovix Command Reference*
 
 *Image Generation:*
 `/flux [prompt]` - High-quality (FLUX.1-dev)
@@ -928,7 +980,7 @@ def process_image_generation(message, model_type=None):
                         user_id,
                         result,
                         caption=f"🎨 *AI Generated ({active_model.upper()}):* {prompt}\n\n"
-                               f"✨ Powered by Nova AI | {datetime.now().strftime('%H:%M')}"
+                                       f"✨ Powered by Artovix AI | {datetime.now().strftime('%H:%M')}"
                     )
                     logger.info(f"✓ Image sent to {user_id}")
                 except Exception as e:
@@ -1235,7 +1287,7 @@ def handle_callback(call):
 if __name__ == "__main__":
     print("""
     ╔══════════════════════════════════════════════════╗
-    ║               NOVA ELITE 2026                    ║
+    ║                  ARTOVIX 2026                    ║
     ║            ULTIMATE AI EDITION                   ║
     ║                                                  ║
     ║  ✅ **ALL COMMANDS WORKING:**                    ║
@@ -1254,7 +1306,7 @@ if __name__ == "__main__":
     ╚══════════════════════════════════════════════════╝
     """)
     
-    logger.info("🚀 Starting Nova Elite 2026 (Ultimate Edition)...")
+    logger.info("🚀 Starting Artovix 2026 (Ultimate Edition)...")
     print(f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🤖 Bot: @{bot.get_me().username}")
     print(f"🧠 Memory: {len(memory.load())} active conversations")

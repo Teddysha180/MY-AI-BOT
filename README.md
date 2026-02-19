@@ -16,7 +16,7 @@ Required environment variables (in `.env`):
 
 If `GROQ_API_KEY` or `BOT_TOKEN` are missing, the bot will run in a degraded mode and print helpful warnings.
 
-Note: `nova_memory.json` and `nova_brain.json` are ignored by default.
+Note: `artovix_memory.json` and `artovix_brain.json` are ignored by default.
 
 ## Deploying to Heroku
 

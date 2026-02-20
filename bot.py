@@ -1324,7 +1324,13 @@ if __name__ == "__main__":
     
     logger.info("🚀 Starting Artovix 2026 (Ultimate Edition)...")
     print(f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🤖 Bot: @{bot.get_me().username}")
+    bot_username = "(unavailable)"
+    try:
+        me = bot.get_me()
+        bot_username = getattr(me, "username", "(unknown)")
+    except Exception as e:
+        logger.warning(f"Startup bot identity check failed: {e}")
+    print(f"🤖 Bot: @{bot_username}")
     print(f"🧠 Memory: {len(memory.load())} active conversations")
     print(f"📊 Analytics: Enhanced database ready")
     

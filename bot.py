@@ -38,6 +38,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 HF_KEY = os.getenv("HF_API_KEY")
+CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+CHAT_MODEL_FALLBACK = os.getenv("GROQ_CHAT_MODEL_FALLBACK", "llama-3.1-8b-instant")
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -327,6 +329,37 @@ def safe_send_message(chat_id, text, **kwargs):
         except Exception as e2:
             logger.error(f"Plain text send error: {e2}")
             return None
+
+def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
+    """Try primary and fallback Groq chat models before failing."""
+    if not groq_client:
+        raise RuntimeError("Groq client not configured.")
+
+    candidates = [CHAT_MODEL, CHAT_MODEL_FALLBACK]
+    # Preserve order while removing duplicates/empty values
+    models = []
+    for model in candidates:
+        if model and model not in models:
+            models.append(model)
+
+    last_error = None
+    for model in models:
+        try:
+            response = groq_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            content = response.choices[0].message.content if response and response.choices else None
+            if content:
+                return content, model
+            raise RuntimeError(f"Empty response content from model: {model}")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Groq chat model failed ({model}): {e}")
+
+    raise last_error if last_error else RuntimeError("All Groq chat models failed.")
 
 # ============================================================================
 # 🖼️ IMAGE GENERATOR (IMPROVED WITH MULTIPLE SERVICES)
@@ -1193,14 +1226,12 @@ def handle_all_messages(message):
                 safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable chat responses.")
                 return
 
-            response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            reply_raw, used_model = groq_chat_with_fallback(
                 messages=messages,
                 temperature=0.7,
                 max_tokens=400
             )
-            
-            reply = clean_markdown(response.choices[0].message.content)
+            reply = clean_markdown(reply_raw)
             
             # Save to memory
             history.extend([
@@ -1217,6 +1248,7 @@ def handle_all_messages(message):
             
             # Send reply
             safe_send_message(message.chat.id, reply)
+            logger.info(f"Chat reply sent using model: {used_model}")
             
             # Log analytics
             tokens_used = len(message.text.split()) + len(reply.split())
@@ -1225,10 +1257,30 @@ def handle_all_messages(message):
         except Exception as api_error:
             logger.error(f"Chat API error: {api_error}\n{traceback.format_exc()}")
             try:
+                err = str(api_error).lower()
+                if "rate limit" in err or "429" in err:
+                    user_msg = (
+                        "⏳ *Too many requests right now.*\n\n"
+                        "Please wait 10-20 seconds and try again."
+                    )
+                elif "api key" in err or "unauthorized" in err or "authentication" in err:
+                    user_msg = (
+                        "🔐 *AI key issue detected.*\n\n"
+                        "Please check `GROQ_API_KEY` in your Render environment variables."
+                    )
+                elif "model" in err and ("not found" in err or "decommissioned" in err or "not available" in err):
+                    user_msg = (
+                        "🧠 *Model temporarily unavailable.*\n\n"
+                        "I switched models automatically. Please try your message again."
+                    )
+                else:
+                    user_msg = (
+                        "⚠️ *AI service temporary issue.*\n\n"
+                        "Please try again in a moment."
+                    )
                 safe_send_message(
                     message.chat.id,
-                    "🤖 *I'm thinking...*\n\n"
-                    "Please try again in a moment or rephrase your question."
+                    user_msg
                 )
             except Exception:
                 logger.error("Failed to send fallback message after chat error.")

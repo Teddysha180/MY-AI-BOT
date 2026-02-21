@@ -22,6 +22,10 @@ app = Flask(__name__)
 def home():
     return "Bot is running!"
 
+@app.route('/health')
+def health():
+    return "OK"
+
 def run_flask():
     # Use port 7860 as it's the default for Hugging Face Spaces
     app.run(host='0.0.0.0', port=7860)

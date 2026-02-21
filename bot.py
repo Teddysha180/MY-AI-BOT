@@ -28,6 +28,23 @@ def run_flask():
 
 # Start Flask in a background thread
 Thread(target=run_flask, daemon=True).start()
+Thread(target=keepalive_loop, daemon=True).start()
+
+def keepalive_loop():
+    """Ping a URL periodically to keep the service warm on free tiers."""
+    url = os.getenv("KEEPALIVE_URL")
+    if not url:
+        return
+    try:
+        interval = int(os.getenv("KEEPALIVE_INTERVAL_SEC", "300"))
+    except ValueError:
+        interval = 300
+    while True:
+        try:
+            requests.get(url, timeout=10)
+        except Exception:
+            pass
+        time.sleep(max(60, interval))
 
 # Load environment variables
 load_dotenv()

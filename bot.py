@@ -28,7 +28,6 @@ def run_flask():
 
 # Start Flask in a background thread
 Thread(target=run_flask, daemon=True).start()
-Thread(target=keepalive_loop, daemon=True).start()
 
 def keepalive_loop():
     """Ping a URL periodically to keep the service warm on free tiers."""
@@ -45,6 +44,9 @@ def keepalive_loop():
         except Exception:
             pass
         time.sleep(max(60, interval))
+
+# Start keepalive loop after it is defined
+Thread(target=keepalive_loop, daemon=True).start()
 
 # Load environment variables
 load_dotenv()

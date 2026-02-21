@@ -571,9 +571,44 @@ class ImageGenerator:
 # ============================================================================
 # 🚀 START COMMAND (FIXED)
 # ============================================================================
+def play_intro_animation(chat_id):
+    """Render a short Telegram-friendly boot animation by editing one message."""
+    logo = (
+        "ARTOVIX AI CORE\n"
+        "==============="
+    )
+    frames = [
+        "```text\n[SYSTEM MALFUNCTION]\n!@#$%^&*()_+<>?:{}\n```",
+        "```text\n[SYSTEM MALFUNCTION]\n^&*()_+<>?:{}!@#$%\n```",
+        f"```text\n{logo}\n\n>> CORE STABILIZED...\n```",
+        f"```text\n{logo}\n\nNeural Link    [####------] 40%\n```",
+        f"```text\n{logo}\n\nNeural Link    [##########] READY\nQuantum Gates  [#####-----] 50%\n```",
+        f"```text\n{logo}\n\nNeural Link    [##########] READY\nQuantum Gates  [##########] OPEN\nArtovix Core   [##########] SYNCED\n```",
+        "⚡ *ARTOVIX AI v4.0 DEPLOYED*\nProtocol: Advanced Assistance | Level: Elite"
+    ]
+
+    msg = None
+    for i, frame in enumerate(frames):
+        try:
+            if i == 0:
+                msg = bot.send_message(chat_id, frame, parse_mode="Markdown")
+            elif msg:
+                bot.edit_message_text(
+                    frame,
+                    chat_id=chat_id,
+                    message_id=msg.message_id,
+                    parse_mode="Markdown"
+                )
+            time.sleep(0.35 if i < len(frames) - 1 else 0.2)
+        except Exception:
+            # Keep /start resilient; intro animation should never block bot usage.
+            break
+
 @bot.message_handler(commands=['start', 'artovix', 'hello'])
 def start_command(message):
     try:
+        play_intro_animation(message.chat.id)
+
         welcome_msg = """🌟 *Welcome to Artovix 2026!* 🌟
 
 I'm your AI assistant powered by Groq's Llama 3.3 70B!

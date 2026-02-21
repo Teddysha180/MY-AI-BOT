@@ -316,6 +316,52 @@ def clean_markdown(text):
         
     return text[:4000]
 
+def detect_code_language(text):
+    """Best-effort language detection for code answers."""
+    t = (text or "").lower()
+    if any(k in t for k in ["javascript", "node", "js", "typescript", "ts"]):
+        return "javascript"
+    if "java" in t:
+        return "java"
+    if any(k in t for k in ["c++", "cpp"]):
+        return "cpp"
+    if any(k in t for k in ["c#", "csharp", ".net"]):
+        return "csharp"
+    if any(k in t for k in ["go", "golang"]):
+        return "go"
+    if any(k in t for k in ["rust"]):
+        return "rust"
+    if any(k in t for k in ["php"]):
+        return "php"
+    if any(k in t for k in ["sql", "postgres", "mysql", "sqlite"]):
+        return "sql"
+    if any(k in t for k in ["html"]):
+        return "html"
+    if any(k in t for k in ["css"]):
+        return "css"
+    if any(k in t for k in ["bash", "shell", "terminal", "cmd", "powershell"]):
+        return "bash"
+    return "python"
+
+def ensure_copyable_code_blocks(text, preferred_language="python"):
+    """Ensure code answers always contain valid fenced code blocks."""
+    output = text or ""
+
+    # Close unbalanced fences so Telegram renders block correctly.
+    if output.count("```") % 2 != 0:
+        output += "\n```"
+
+    # If model forgot fences, add a small runnable example block.
+    if "```" not in output:
+        output += (
+            f"\n\n```{preferred_language}\n"
+            "# Copyable example\n"
+            "print('Replace this with your final solution')\n"
+            "```"
+        )
+
+    return output
+
 def safe_send_message(chat_id, text, **kwargs):
     """Safely send a message with error handling"""
     try:
@@ -783,6 +829,11 @@ def handle_code(message):
 3. Improvements
 4. Best practices
 
+OUTPUT FORMAT RULES:
+- Always include corrected/improved code in fenced code blocks.
+- Use triple backticks with a language tag (example: ```python).
+- Make code directly copyable and runnable.
+
 Code:
 {code_text}"""
         else:
@@ -793,7 +844,12 @@ Provide:
 1. Clear explanation
 2. Code examples if applicable
 3. Best practices
-4. Common pitfalls to avoid"""
+4. Common pitfalls to avoid
+
+OUTPUT FORMAT RULES:
+- Always include at least one copyable code block.
+- Use triple backticks with a language tag.
+- Keep code practical and runnable."""
         
         try:
             if not groq_client:
@@ -807,7 +863,12 @@ Provide:
                 max_tokens=600
             )
 
-            analysis = clean_markdown(response.choices[0].message.content)
+            preferred_language = detect_code_language(code_text)
+            analysis = ensure_copyable_code_blocks(
+                response.choices[0].message.content,
+                preferred_language=preferred_language
+            )
+            analysis = clean_markdown(analysis)
 
             result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
             safe_send_message(message.chat.id, result_text)

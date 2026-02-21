@@ -1409,7 +1409,11 @@ if __name__ == "__main__":
                 return
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-                resp = requests.post(url, timeout=10)
+                resp = requests.post(
+                    url,
+                    json={"drop_pending_updates": True},
+                    timeout=10
+                )
                 logger.info(f"deleteWebhook: {resp.status_code} {resp.text}")
             except Exception as _e:
                 logger.warning(f"Failed to call deleteWebhook: {_e}")
@@ -1423,6 +1427,7 @@ if __name__ == "__main__":
                 bot.infinity_polling(
                     timeout=30,
                     long_polling_timeout=5,
+                    skip_pending=True,
                     logger_level=logging.INFO
                 )
                 break
@@ -1431,9 +1436,12 @@ if __name__ == "__main__":
                 err_text = str(e)
                 logger.error(f"Polling exception: {err_text}\n{traceback.format_exc()}")
                 if '409' in err_text or 'Conflict' in err_text:
-                    logger.warning("Detected Telegram 409 conflict, attempting to delete webhook and retry polling...")
+                    logger.warning(
+                        "Detected Telegram 409 conflict. Another bot instance is likely polling. "
+                        "Attempting webhook cleanup and retrying in 20s..."
+                    )
                     _delete_telegram_webhook()
-                    time.sleep(5)
+                    time.sleep(20)
                     continue
                 # For other exceptions, wait and retry once
                 time.sleep(5)

@@ -63,6 +63,8 @@ GROQ_KEY = os.getenv("GROQ_API_KEY")
 HF_KEY = os.getenv("HF_API_KEY")
 CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
 CHAT_MODEL_FALLBACK = os.getenv("GROQ_CHAT_MODEL_FALLBACK", "llama-3.1-8b-instant")
+VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
+VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -429,6 +431,35 @@ def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
             logger.warning(f"Groq chat model failed ({model}): {e}")
 
     raise last_error if last_error else RuntimeError("All Groq chat models failed.")
+
+def groq_vision_with_fallback(messages, max_tokens=500):
+    """Try primary and fallback Groq vision models before failing."""
+    if not groq_client:
+        raise RuntimeError("Groq client not configured.")
+
+    candidates = [VISION_MODEL, VISION_MODEL_FALLBACK]
+    models = []
+    for model in candidates:
+        if model and model not in models:
+            models.append(model)
+
+    last_error = None
+    for model in models:
+        try:
+            response = groq_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens
+            )
+            content = response.choices[0].message.content if response and response.choices else None
+            if content:
+                return content, model
+            raise RuntimeError(f"Empty vision response from model: {model}")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Groq vision model failed ({model}): {e}")
+
+    raise last_error if last_error else RuntimeError("All Groq vision models failed.")
 
 # ============================================================================
 # 🖼️ IMAGE GENERATOR (IMPROVED WITH MULTIPLE SERVICES)
@@ -1286,34 +1317,44 @@ def handle_photo(message):
             safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable vision features.")
             return
 
-        response = groq_client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
-                            },
+        vision_messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
                         },
-                    ],
-                }
-            ],
+                    },
+                ],
+            }
+        ]
+
+        analysis_raw, used_model = groq_vision_with_fallback(
+            messages=vision_messages,
             max_tokens=500
         )
-
-        analysis = clean_markdown(response.choices[0].message.content)
+        analysis = clean_markdown(analysis_raw)
 
         safe_send_message(message.chat.id, f"🖼️ *Image Analysis:*\n\n{analysis}")
+        logger.info(f"Vision analysis sent using model: {used_model}")
 
         analytics.log_request(message.chat.id, 500, "vision_analysis")
         
     except Exception as e:
         logger.error(f"Vision handling error: {e}")
-        safe_send_message(message.chat.id, "🖼️ *Vision analysis failed.*\nPlease try again with a clearer image.")
+        err = str(e).lower()
+        if "api key" in err or "unauthorized" in err or "authentication" in err:
+            msg = "🔐 *Vision key/auth issue.*\nPlease check `GROQ_API_KEY` in Render environment variables."
+        elif "model" in err and ("not found" in err or "not available" in err or "decommissioned" in err):
+            msg = "🧠 *Vision model unavailable right now.*\nI tried fallback models. Please retry in a moment."
+        elif "413" in err or "too large" in err:
+            msg = "📷 *Image too large.*\nPlease send a smaller image or compressed photo."
+        else:
+            msg = "🖼️ *Vision analysis failed.*\nPlease try again with another image."
+        safe_send_message(message.chat.id, msg)
 
 # ============================================================================
 # 💬 TEXT MESSAGES HANDLER

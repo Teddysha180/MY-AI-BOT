@@ -339,7 +339,61 @@ def clean_markdown(text):
     if text.count('*') % 2 != 0:
         text += '*'
         
-    return text[:4000]
+    return text
+
+def split_text_for_telegram(text, max_len=3600):
+    """Split long text into Telegram-safe chunks while preserving readability."""
+    if not text:
+        return [""]
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    current = ""
+
+    # Prefer paragraph boundaries first.
+    paragraphs = text.split("\n\n")
+    for para in paragraphs:
+        piece = para if not current else f"\n\n{para}"
+        if len(current) + len(piece) <= max_len:
+            current += piece
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        # If a single paragraph is too large, split by lines.
+        if len(para) > max_len:
+            lines = para.split("\n")
+            line_acc = ""
+            for line in lines:
+                line_piece = line if not line_acc else f"\n{line}"
+                if len(line_acc) + len(line_piece) <= max_len:
+                    line_acc += line_piece
+                else:
+                    if line_acc:
+                        chunks.append(line_acc)
+                    line_acc = line
+            if line_acc:
+                current = line_acc
+        else:
+            current = para
+
+    if current:
+        chunks.append(current)
+
+    # Final hard split safety.
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_len:
+            final_chunks.append(chunk)
+            continue
+        idx = 0
+        while idx < len(chunk):
+            final_chunks.append(chunk[idx:idx + max_len])
+            idx += max_len
+    return final_chunks
 
 def detect_code_language(text):
     """Best-effort language detection for code answers."""
@@ -389,17 +443,38 @@ def ensure_copyable_code_blocks(text, preferred_language="python"):
 
 def safe_send_message(chat_id, text, **kwargs):
     """Safely send a message with error handling"""
-    try:
-        return bot.send_message(chat_id, text, **kwargs)
-    except Exception as e:
-        logger.error(f"Send message error: {e}")
-        # Try without markdown
+    def _send_once(payload, local_kwargs):
         try:
-            text_plain = text.replace('*', '').replace('_', '').replace('`', '').replace('~', '')
-            return bot.send_message(chat_id, text_plain, **kwargs)
-        except Exception as e2:
-            logger.error(f"Plain text send error: {e2}")
-            return None
+            return bot.send_message(chat_id, payload, **local_kwargs)
+        except Exception as e:
+            logger.error(f"Send message error: {e}")
+            # Try without markdown for this chunk
+            try:
+                text_plain = payload.replace('*', '').replace('_', '').replace('`', '').replace('~', '')
+                fallback_kwargs = dict(local_kwargs)
+                fallback_kwargs.pop("parse_mode", None)
+                return bot.send_message(chat_id, text_plain, **fallback_kwargs)
+            except Exception as e2:
+                logger.error(f"Plain text send error: {e2}")
+                return None
+
+    chunks = split_text_for_telegram(text, max_len=3600)
+    if len(chunks) == 1:
+        return _send_once(chunks[0], kwargs)
+
+    first_message = None
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        # Add part marker only for multi-chunk responses.
+        payload = clean_markdown(f"[Part {i}/{total}]\n{chunk}")
+        chunk_kwargs = dict(kwargs)
+        # Avoid repeating buttons/markup on every chunk.
+        if i != total:
+            chunk_kwargs.pop("reply_markup", None)
+        sent = _send_once(payload, chunk_kwargs)
+        if first_message is None:
+            first_message = sent
+    return first_message
 
 def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
     """Try primary and fallback Groq chat models before failing."""

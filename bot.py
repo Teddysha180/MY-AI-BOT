@@ -11,6 +11,7 @@ import threading
 import traceback
 import time
 import base64
+import io
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
@@ -443,6 +444,8 @@ def ensure_copyable_code_blocks(text, preferred_language="python"):
 
 def safe_send_message(chat_id, text, **kwargs):
     """Safely send a message with error handling"""
+    FILE_FALLBACK_THRESHOLD = 12000
+
     def _send_once(payload, local_kwargs):
         try:
             return bot.send_message(chat_id, payload, **local_kwargs)
@@ -457,6 +460,15 @@ def safe_send_message(chat_id, text, **kwargs):
             except Exception as e2:
                 logger.error(f"Plain text send error: {e2}")
                 return None
+
+    if text and len(text) > FILE_FALLBACK_THRESHOLD:
+        try:
+            doc = io.BytesIO(text.encode("utf-8"))
+            doc.name = "artovix_response.txt"
+            caption = kwargs.get("caption", "Long response attached as file.")
+            return bot.send_document(chat_id, doc, caption=caption)
+        except Exception as e:
+            logger.error(f"Document fallback send error: {e}")
 
     chunks = split_text_for_telegram(text, max_len=3600)
     if len(chunks) == 1:

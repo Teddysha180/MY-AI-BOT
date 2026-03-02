@@ -69,6 +69,7 @@ ADMIN_USER_IDS = {
     int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",")
     if x.strip().isdigit()
 }
+ADMIN_STORE_FILE = "admin_users.json"
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -497,9 +498,35 @@ def safe_send_message(chat_id, text, **kwargs):
             first_message = sent
     return first_message
 
+def load_dynamic_admin_ids():
+    try:
+        if not os.path.exists(ADMIN_STORE_FILE):
+            return set()
+        with open(ADMIN_STORE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result = set()
+        if isinstance(data, list):
+            for item in data:
+                if str(item).isdigit():
+                    result.add(int(item))
+        return result
+    except Exception as e:
+        logger.error(f"Load dynamic admins error: {e}")
+        return set()
+
+def save_dynamic_admin_ids(admin_ids):
+    try:
+        with open(ADMIN_STORE_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(admin_ids)), f, indent=2)
+    except Exception as e:
+        logger.error(f"Save dynamic admins error: {e}")
+
+def get_effective_admin_ids():
+    return set(ADMIN_USER_IDS) | load_dynamic_admin_ids()
+
 def is_admin_user(user_id):
     try:
-        return int(user_id) in ADMIN_USER_IDS
+        return int(user_id) in get_effective_admin_ids()
     except:
         return False
 
@@ -1235,6 +1262,14 @@ def handle_help(message):
 `/reset` - Clear conversation memory
 `/status` - Check bot health
 
+*Admin Commands (admin only):*
+`/users` - Count known users
+`/admins` - List admins
+`/addadmin [user_id]` - Grant admin (or reply with command)
+`/deladmin [user_id]` - Remove dynamic admin (or reply)
+`/broadcast [text]` - Send text to all users
+`/post` - Reply to media/text and broadcast
+
 *Tips:*
 • Be descriptive for better images
 • Use `/draw` without a prompt to change your default model
@@ -1265,6 +1300,75 @@ def handle_users(message):
     except Exception as e:
         logger.error(f"Users command error: {e}")
         safe_send_message(message.chat.id, "❌ Failed to fetch users.")
+
+@bot.message_handler(commands=['admins'])
+def handle_admins(message):
+    try:
+        if not require_admin(message):
+            return
+        admins = sorted(get_effective_admin_ids())
+        lines = "\n".join([f"- `{uid}`" for uid in admins]) if admins else "- none"
+        safe_send_message(
+            message.chat.id,
+            f"👮 *Admins ({len(admins)}):*\n{lines}"
+        )
+    except Exception as e:
+        logger.error(f"Admins command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to fetch admins.")
+
+def _extract_target_admin_id(message):
+    # 1) explicit: /addadmin 12345
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1 and parts[1].strip().isdigit():
+            return int(parts[1].strip())
+    # 2) reply to a user's message
+    if message.reply_to_message and message.reply_to_message.from_user:
+        try:
+            return int(message.reply_to_message.from_user.id)
+        except:
+            return None
+    return None
+
+@bot.message_handler(commands=['addadmin'])
+def handle_add_admin(message):
+    try:
+        if not require_admin(message):
+            return
+        target_id = _extract_target_admin_id(message)
+        if not target_id:
+            safe_send_message(message.chat.id, "Usage: `/addadmin <user_id>` or reply with `/addadmin`.")
+            return
+        dynamic_admins = load_dynamic_admin_ids()
+        dynamic_admins.add(target_id)
+        save_dynamic_admin_ids(dynamic_admins)
+        safe_send_message(message.chat.id, f"✅ Added admin: `{target_id}`")
+    except Exception as e:
+        logger.error(f"Add admin command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to add admin.")
+
+@bot.message_handler(commands=['deladmin', 'removeadmin'])
+def handle_remove_admin(message):
+    try:
+        if not require_admin(message):
+            return
+        target_id = _extract_target_admin_id(message)
+        if not target_id:
+            safe_send_message(message.chat.id, "Usage: `/deladmin <user_id>` or reply with `/deladmin`.")
+            return
+        dynamic_admins = load_dynamic_admin_ids()
+        if target_id in dynamic_admins:
+            dynamic_admins.remove(target_id)
+            save_dynamic_admin_ids(dynamic_admins)
+            safe_send_message(message.chat.id, f"✅ Removed admin: `{target_id}`")
+        else:
+            if target_id in ADMIN_USER_IDS:
+                safe_send_message(message.chat.id, "⚠️ This admin comes from `ADMIN_USER_IDS` env var. Edit env to remove.")
+            else:
+                safe_send_message(message.chat.id, "ℹ️ User is not in dynamic admin list.")
+    except Exception as e:
+        logger.error(f"Remove admin command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to remove admin.")
 
 @bot.message_handler(commands=['broadcast'])
 def handle_broadcast(message):

@@ -65,6 +65,10 @@ CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
 CHAT_MODEL_FALLBACK = os.getenv("GROQ_CHAT_MODEL_FALLBACK", "llama-3.1-8b-instant")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
 VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
+ADMIN_USER_IDS = {
+    int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",")
+    if x.strip().isdigit()
+}
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -230,6 +234,23 @@ class Analytics:
                 self.conn.close()
         except:
             pass
+
+    def get_known_user_ids(self):
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT DISTINCT user_id FROM metrics WHERE user_id IS NOT NULL AND user_id != ''")
+                rows = cursor.fetchall()
+                user_ids = set()
+                for row in rows:
+                    try:
+                        user_ids.add(int(str(row[0]).strip()))
+                    except:
+                        continue
+                return user_ids
+        except Exception as e:
+            logger.error(f"Analytics user ids error: {e}")
+            return set()
 
 analytics = Analytics()
 
@@ -476,6 +497,44 @@ def safe_send_message(chat_id, text, **kwargs):
             first_message = sent
     return first_message
 
+def is_admin_user(user_id):
+    try:
+        return int(user_id) in ADMIN_USER_IDS
+    except:
+        return False
+
+def require_admin(message):
+    uid = getattr(getattr(message, "from_user", None), "id", None)
+    if not is_admin_user(uid):
+        safe_send_message(message.chat.id, "⛔ Admin only command.")
+        return False
+    return True
+
+def get_all_known_user_ids():
+    user_ids = set()
+    # Users in memory file
+    try:
+        for uid in memory.load().keys():
+            if str(uid).isdigit():
+                user_ids.add(int(uid))
+    except Exception as e:
+        logger.error(f"Memory user ids error: {e}")
+    # Users in analytics DB
+    user_ids.update(analytics.get_known_user_ids())
+    # Never broadcast back to dummy/invalid ids
+    return {uid for uid in user_ids if uid > 0}
+
+def broadcast_text_to_users(text):
+    delivered = 0
+    failed = 0
+    for uid in get_all_known_user_ids():
+        try:
+            safe_send_message(uid, text)
+            delivered += 1
+        except Exception:
+            failed += 1
+    return delivered, failed
+
 def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
     """Try primary and fallback Groq chat models before failing."""
     if not groq_client:
@@ -497,9 +556,11 @@ def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
                 temperature=temperature,
                 max_tokens=max_tokens
             )
-            content = response.choices[0].message.content if response and response.choices else None
+            choice = response.choices[0] if response and response.choices else None
+            content = choice.message.content if choice else None
+            finish_reason = getattr(choice, "finish_reason", None) if choice else None
             if content:
-                return content, model
+                return content, model, finish_reason
             raise RuntimeError(f"Empty response content from model: {model}")
         except Exception as e:
             last_error = e
@@ -1068,6 +1129,8 @@ OUTPUT FORMAT RULES:
 @bot.message_handler(commands=['stats', 'analytics', 'metrics'])
 def handle_stats(message):
     try:
+        if not require_admin(message):
+            return
         metrics = analytics.get_current_metrics()
         breakdown = metrics.get('breakdown', {})
         
@@ -1127,6 +1190,8 @@ def handle_reset(message):
 @bot.message_handler(commands=['status'])
 def handle_status(message):
     try:
+        if not require_admin(message):
+            return
         status_msg = f"""✅ *Artovix Status Report*
 
 
@@ -1182,6 +1247,79 @@ def handle_help(message):
     except Exception as e:
         logger.error(f"Help error: {e}")
         safe_send_message(message.chat.id, "Type /start to begin!")
+
+# ============================================================================
+# 👮 ADMIN BROADCAST COMMANDS
+# ============================================================================
+@bot.message_handler(commands=['users'])
+def handle_users(message):
+    try:
+        if not require_admin(message):
+            return
+        users = sorted(get_all_known_user_ids())
+        safe_send_message(
+            message.chat.id,
+            f"👥 *Known Users:* {len(users)}\n"
+            f"Use `/broadcast your message` or reply with `/post` to send media/text."
+        )
+    except Exception as e:
+        logger.error(f"Users command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to fetch users.")
+
+@bot.message_handler(commands=['broadcast'])
+def handle_broadcast(message):
+    try:
+        if not require_admin(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2 or not parts[1].strip():
+            safe_send_message(message.chat.id, "Usage: `/broadcast your message`")
+            return
+        delivered, failed = broadcast_text_to_users(parts[1].strip())
+        safe_send_message(message.chat.id, f"✅ Broadcast sent.\nDelivered: {delivered}\nFailed: {failed}")
+    except Exception as e:
+        logger.error(f"Broadcast command error: {e}")
+        safe_send_message(message.chat.id, "❌ Broadcast failed.")
+
+@bot.message_handler(commands=['post'])
+def handle_post(message):
+    try:
+        if not require_admin(message):
+            return
+        if not message.reply_to_message:
+            safe_send_message(
+                message.chat.id,
+                "Reply to a text/photo/video/audio/document with `/post` to broadcast it."
+            )
+            return
+
+        target = message.reply_to_message
+        users = get_all_known_user_ids()
+        delivered = 0
+        failed = 0
+
+        for uid in users:
+            try:
+                if getattr(target, "text", None):
+                    bot.send_message(uid, target.text)
+                elif getattr(target, "photo", None):
+                    bot.send_photo(uid, target.photo[-1].file_id, caption=target.caption or "")
+                elif getattr(target, "video", None):
+                    bot.send_video(uid, target.video.file_id, caption=target.caption or "")
+                elif getattr(target, "audio", None):
+                    bot.send_audio(uid, target.audio.file_id, caption=target.caption or "")
+                elif getattr(target, "document", None):
+                    bot.send_document(uid, target.document.file_id, caption=target.caption or "")
+                else:
+                    continue
+                delivered += 1
+            except Exception:
+                failed += 1
+
+        safe_send_message(message.chat.id, f"✅ Post sent.\nDelivered: {delivered}\nFailed: {failed}")
+    except Exception as e:
+        logger.error(f"Post command error: {e}")
+        safe_send_message(message.chat.id, "❌ Post failed.")
 
 # ============================================================================
 # 🎨 DRAW COMMANDS (MODEL-SPECIFIC)
@@ -1461,11 +1599,27 @@ def handle_all_messages(message):
                 safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable chat responses.")
                 return
 
-            reply_raw, used_model = groq_chat_with_fallback(
-                messages=messages,
-                temperature=0.7,
-                max_tokens=400
-            )
+            local_messages = list(messages)
+            reply_parts = []
+            used_model = None
+
+            # Auto-continue if model stops due to token limit.
+            for _ in range(3):
+                part, used_model, finish_reason = groq_chat_with_fallback(
+                    messages=local_messages,
+                    temperature=0.7,
+                    max_tokens=700
+                )
+                reply_parts.append(part.strip())
+                if finish_reason != "length":
+                    break
+                local_messages.append({"role": "assistant", "content": part})
+                local_messages.append({
+                    "role": "user",
+                    "content": "Continue exactly from where you stopped. Do not repeat previous text."
+                })
+
+            reply_raw = "\n".join(p for p in reply_parts if p)
             reply = clean_markdown(reply_raw)
             
             # Save to memory

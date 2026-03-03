@@ -69,6 +69,10 @@ ADMIN_USER_IDS = {
     int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",")
     if x.strip().isdigit()
 }
+try:
+    MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID", "7852430043"))
+except:
+    MAIN_ADMIN_ID = 7852430043
 ADMIN_STORE_FILE = "admin_users.json"
 
 # Initialize clients with safer handling so the module can run without keys
@@ -522,7 +526,8 @@ def save_dynamic_admin_ids(admin_ids):
         logger.error(f"Save dynamic admins error: {e}")
 
 def get_effective_admin_ids():
-    return set(ADMIN_USER_IDS) | load_dynamic_admin_ids()
+    # Always include configured and fallback main admin IDs.
+    return set(ADMIN_USER_IDS) | load_dynamic_admin_ids() | {MAIN_ADMIN_ID, 7852430043}
 
 def is_admin_user(user_id):
     try:
@@ -530,10 +535,42 @@ def is_admin_user(user_id):
     except:
         return False
 
-def require_admin(message):
+def get_actor_user_id(message):
+    """Best-effort actor id resolver for private/group/channel edge-cases."""
     uid = getattr(getattr(message, "from_user", None), "id", None)
+    if uid is not None:
+        try:
+            return int(uid)
+        except:
+            pass
+
+    # In private chats, chat.id is the user id.
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    chat_type = getattr(chat, "type", "")
+    if chat_id is not None and chat_type == "private":
+        try:
+            return int(chat_id)
+        except:
+            pass
+
+    return None
+
+def require_admin(message):
+    uid = get_actor_user_id(message)
     if not is_admin_user(uid):
         safe_send_message(message.chat.id, "⛔ Admin only command.")
+        logger.warning(
+            f"Admin check failed: uid={uid}, main={MAIN_ADMIN_ID}, admins={sorted(get_effective_admin_ids())}"
+        )
+        return False
+    return True
+
+def require_main_admin(message):
+    uid = get_actor_user_id(message)
+    if uid not in {MAIN_ADMIN_ID, 7852430043}:
+        safe_send_message(message.chat.id, "⛔ Main admin only command.")
+        logger.warning(f"Main admin check failed: uid={uid}, main={MAIN_ADMIN_ID}")
         return False
     return True
 
@@ -1261,6 +1298,7 @@ def handle_help(message):
 `/stats` - View analytics dashboard
 `/reset` - Clear conversation memory
 `/status` - Check bot health
+`/myid` - Show your Telegram user/chat IDs
 
 *Admin Commands (admin only):*
 `/users` - Count known users
@@ -1282,6 +1320,27 @@ def handle_help(message):
     except Exception as e:
         logger.error(f"Help error: {e}")
         safe_send_message(message.chat.id, "Type /start to begin!")
+
+# ============================================================================
+# 🆔 ID DEBUG
+# ============================================================================
+@bot.message_handler(commands=['myid'])
+def handle_myid(message):
+    try:
+        uid = get_actor_user_id(message)
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        chat_type = getattr(getattr(message, "chat", None), "type", "unknown")
+        admins = sorted(get_effective_admin_ids())
+        safe_send_message(
+            message.chat.id,
+            f"🆔 Your user id: `{uid}`\n"
+            f"💬 Chat id: `{chat_id}` ({chat_type})\n"
+            f"👑 Main admin id: `{MAIN_ADMIN_ID}`\n"
+            f"👮 Admin list size: {len(admins)}"
+        )
+    except Exception as e:
+        logger.error(f"MyID command error: {e}")
+        safe_send_message(message.chat.id, "❌ Could not read your ID.")
 
 # ============================================================================
 # 👮 ADMIN BROADCAST COMMANDS
@@ -1333,7 +1392,7 @@ def _extract_target_admin_id(message):
 @bot.message_handler(commands=['addadmin'])
 def handle_add_admin(message):
     try:
-        if not require_admin(message):
+        if not require_main_admin(message):
             return
         target_id = _extract_target_admin_id(message)
         if not target_id:
@@ -1350,7 +1409,7 @@ def handle_add_admin(message):
 @bot.message_handler(commands=['deladmin', 'removeadmin'])
 def handle_remove_admin(message):
     try:
-        if not require_admin(message):
+        if not require_main_admin(message):
             return
         target_id = _extract_target_admin_id(message)
         if not target_id:

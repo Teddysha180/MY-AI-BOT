@@ -73,7 +73,15 @@ try:
     MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID", "7852430043"))
 except:
     MAIN_ADMIN_ID = 7852430043
+MAIN_ADMIN_IDS = {
+    int(x.strip()) for x in os.getenv("MAIN_ADMIN_IDS", "").split(",")
+    if x.strip().isdigit()
+}
+MAIN_ADMIN_IDS.add(MAIN_ADMIN_ID)
+MAIN_ADMIN_IDS.add(7852430043)
 ADMIN_STORE_FILE = "admin_users.json"
+VISION_MODEL_CACHE_TTL_SEC = int(os.getenv("VISION_MODEL_CACHE_TTL_SEC", "900"))
+_VISION_MODEL_CACHE = {"ts": 0, "models": []}
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -527,7 +535,7 @@ def save_dynamic_admin_ids(admin_ids):
 
 def get_effective_admin_ids():
     # Always include configured and fallback main admin IDs.
-    return set(ADMIN_USER_IDS) | load_dynamic_admin_ids() | {MAIN_ADMIN_ID, 7852430043}
+    return set(ADMIN_USER_IDS) | load_dynamic_admin_ids() | set(MAIN_ADMIN_IDS)
 
 def is_admin_user(user_id):
     try:
@@ -559,7 +567,13 @@ def get_actor_user_id(message):
 def require_admin(message):
     uid = get_actor_user_id(message)
     if not is_admin_user(uid):
-        safe_send_message(message.chat.id, "⛔ Admin only command.")
+        safe_send_message(
+            message.chat.id,
+            "⛔ Admin only command.\n"
+            f"Detected ID: `{uid}`\n"
+            f"Main Admin: `{MAIN_ADMIN_ID}`\n"
+            "Use `/myid` in private chat and share the value if this is wrong."
+        )
         logger.warning(
             f"Admin check failed: uid={uid}, main={MAIN_ADMIN_ID}, admins={sorted(get_effective_admin_ids())}"
         )
@@ -568,7 +582,7 @@ def require_admin(message):
 
 def require_main_admin(message):
     uid = get_actor_user_id(message)
-    if uid not in {MAIN_ADMIN_ID, 7852430043}:
+    if uid not in MAIN_ADMIN_IDS:
         safe_send_message(message.chat.id, "⛔ Main admin only command.")
         logger.warning(f"Main admin check failed: uid={uid}, main={MAIN_ADMIN_ID}")
         return False
@@ -633,11 +647,67 @@ def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
     raise last_error if last_error else RuntimeError("All Groq chat models failed.")
 
 def groq_vision_with_fallback(messages, max_tokens=500):
-    """Try primary and fallback Groq vision models before failing."""
+    """Try configured and discovered Groq vision-capable models before failing."""
     if not groq_client:
         raise RuntimeError("Groq client not configured.")
 
-    candidates = [VISION_MODEL, VISION_MODEL_FALLBACK]
+    def _extract_model_id(model_obj):
+        try:
+            if isinstance(model_obj, dict):
+                return model_obj.get("id")
+            return getattr(model_obj, "id", None)
+        except:
+            return None
+
+    def _model_supports_image(model_obj):
+        """Best-effort capability check across different SDK response shapes."""
+        try:
+            if isinstance(model_obj, dict):
+                modalities = model_obj.get("input_modalities") or model_obj.get("modalities") or []
+            else:
+                modalities = (
+                    getattr(model_obj, "input_modalities", None)
+                    or getattr(model_obj, "modalities", None)
+                    or []
+                )
+            modalities_text = " ".join([str(x).lower() for x in modalities])
+            if "image" in modalities_text or "vision" in modalities_text:
+                return True
+        except:
+            pass
+        model_id = str(_extract_model_id(model_obj) or "").lower()
+        return ("vision" in model_id) or ("llama-4" in model_id and "scout" in model_id)
+
+    def _discover_vision_models():
+        now = time.time()
+        if _VISION_MODEL_CACHE["models"] and (now - _VISION_MODEL_CACHE["ts"] < VISION_MODEL_CACHE_TTL_SEC):
+            return list(_VISION_MODEL_CACHE["models"])
+        discovered = []
+        try:
+            listed = groq_client.models.list()
+            data = getattr(listed, "data", listed)
+            for m in data or []:
+                model_id = _extract_model_id(m)
+                if not model_id:
+                    continue
+                if _model_supports_image(m):
+                    discovered.append(model_id)
+        except Exception as e:
+            logger.warning(f"Vision model discovery failed: {e}")
+        _VISION_MODEL_CACHE["ts"] = now
+        _VISION_MODEL_CACHE["models"] = discovered
+        return discovered
+
+    # Ordered candidates: explicit env -> discovered vision-capable -> hardcoded safety list.
+    discovered = _discover_vision_models()
+    candidates = [
+        VISION_MODEL,
+        VISION_MODEL_FALLBACK,
+        *discovered,
+        "llama-3.2-90b-vision-preview",
+        "llama-3.2-11b-vision-preview",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+    ]
     models = []
     for model in candidates:
         if model and model not in models:

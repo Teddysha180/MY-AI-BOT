@@ -11,6 +11,7 @@ import threading
 import traceback
 import time
 import base64
+from urllib.parse import urlparse
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
@@ -608,6 +609,87 @@ def broadcast_text_to_users(text):
     for uid in get_all_known_user_ids():
         try:
             safe_send_message(uid, text)
+            delivered += 1
+        except Exception:
+            failed += 1
+    return delivered, failed
+
+POST_WIZARD_STATE = {}
+
+def _wizard_get(chat_id):
+    return POST_WIZARD_STATE.get(int(chat_id))
+
+def _wizard_set(chat_id, state):
+    POST_WIZARD_STATE[int(chat_id)] = state
+
+def _wizard_clear(chat_id):
+    POST_WIZARD_STATE.pop(int(chat_id), None)
+
+def _extract_broadcast_payload_from_message(message):
+    if getattr(message, "text", None) and not message.text.startswith('/'):
+        return {"type": "text", "text": message.text}
+    if getattr(message, "photo", None):
+        return {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption or ""}
+    if getattr(message, "video", None):
+        return {"type": "video", "file_id": message.video.file_id, "caption": message.caption or ""}
+    if getattr(message, "audio", None):
+        return {"type": "audio", "file_id": message.audio.file_id, "caption": message.caption or ""}
+    if getattr(message, "document", None):
+        return {"type": "document", "file_id": message.document.file_id, "caption": message.caption or ""}
+    if getattr(message, "animation", None):
+        return {"type": "animation", "file_id": message.animation.file_id, "caption": message.caption or ""}
+    if getattr(message, "voice", None):
+        return {"type": "voice", "file_id": message.voice.file_id}
+    return None
+
+def _build_button_markup(button_text, button_url):
+    if not button_text or not button_url:
+        return None
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(button_text, url=button_url))
+    return markup
+
+def _is_valid_http_url(value):
+    try:
+        parsed = urlparse(value.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except:
+        return False
+
+def _send_payload_to_user(uid, payload, reply_markup=None):
+    ptype = payload.get("type")
+    if ptype == "text":
+        safe_send_message(uid, payload.get("text", ""), reply_markup=reply_markup)
+        return
+    if ptype == "photo":
+        bot.send_photo(uid, payload["file_id"], caption=payload.get("caption", ""), reply_markup=reply_markup)
+        return
+    if ptype == "video":
+        bot.send_video(uid, payload["file_id"], caption=payload.get("caption", ""), reply_markup=reply_markup)
+        return
+    if ptype == "audio":
+        bot.send_audio(uid, payload["file_id"], caption=payload.get("caption", ""), reply_markup=reply_markup)
+        return
+    if ptype == "document":
+        bot.send_document(uid, payload["file_id"], caption=payload.get("caption", ""), reply_markup=reply_markup)
+        return
+    if ptype == "animation":
+        bot.send_animation(uid, payload["file_id"], caption=payload.get("caption", ""), reply_markup=reply_markup)
+        return
+    if ptype == "voice":
+        # Telegram voice messages do not support inline keyboards.
+        bot.send_voice(uid, payload["file_id"])
+        return
+    raise RuntimeError(f"Unsupported payload type: {ptype}")
+
+def _broadcast_payload_to_users(payload, button_text=None, button_url=None):
+    users = get_all_known_user_ids()
+    delivered = 0
+    failed = 0
+    markup = _build_button_markup(button_text, button_url)
+    for uid in users:
+        try:
+            _send_payload_to_user(uid, payload, reply_markup=markup)
             delivered += 1
         except Exception:
             failed += 1
@@ -1377,6 +1459,8 @@ def handle_help(message):
 `/deladmin [user_id]` - Remove dynamic admin (or reply)
 `/broadcast [text]` - Send text to all users
 `/post` - Reply to media/text and broadcast
+`/postwizard` - Guided broadcast (media/text + button)
+`/cancelpost` - Cancel current post wizard
 
 *Tips:*
 • Be descriptive for better images
@@ -1424,7 +1508,7 @@ def handle_users(message):
         safe_send_message(
             message.chat.id,
             f"👥 *Known Users:* {len(users)}\n"
-            f"Use `/broadcast your message` or reply with `/post` to send media/text."
+            f"Use `/broadcast your message`, reply with `/post`, or run `/postwizard` for guided posting."
         )
     except Exception as e:
         logger.error(f"Users command error: {e}")
@@ -1526,33 +1610,147 @@ def handle_post(message):
             )
             return
 
-        target = message.reply_to_message
-        users = get_all_known_user_ids()
-        delivered = 0
-        failed = 0
-
-        for uid in users:
-            try:
-                if getattr(target, "text", None):
-                    bot.send_message(uid, target.text)
-                elif getattr(target, "photo", None):
-                    bot.send_photo(uid, target.photo[-1].file_id, caption=target.caption or "")
-                elif getattr(target, "video", None):
-                    bot.send_video(uid, target.video.file_id, caption=target.caption or "")
-                elif getattr(target, "audio", None):
-                    bot.send_audio(uid, target.audio.file_id, caption=target.caption or "")
-                elif getattr(target, "document", None):
-                    bot.send_document(uid, target.document.file_id, caption=target.caption or "")
-                else:
-                    continue
-                delivered += 1
-            except Exception:
-                failed += 1
-
+        payload = _extract_broadcast_payload_from_message(message.reply_to_message)
+        if not payload:
+            safe_send_message(message.chat.id, "❌ Unsupported post type. Use text/photo/video/audio/document/animation/voice.")
+            return
+        delivered, failed = _broadcast_payload_to_users(payload)
         safe_send_message(message.chat.id, f"✅ Post sent.\nDelivered: {delivered}\nFailed: {failed}")
     except Exception as e:
         logger.error(f"Post command error: {e}")
         safe_send_message(message.chat.id, "❌ Post failed.")
+
+@bot.message_handler(commands=['postwizard'])
+def handle_postwizard(message):
+    try:
+        if not require_admin(message):
+            return
+        _wizard_set(message.chat.id, {
+            "step": "await_content",
+            "payload": None,
+            "button_text": None,
+            "button_url": None
+        })
+        safe_send_message(
+            message.chat.id,
+            "🧭 *Post Wizard Started*\n\n"
+            "Step 1/3: Send the content you want to broadcast.\n"
+            "Supported: text, photo, video, audio, document, animation, voice.\n\n"
+            "Tip: add caption/text exactly how users should see it.\n"
+            "Use `/cancelpost` anytime to abort."
+        )
+    except Exception as e:
+        logger.error(f"Post wizard start error: {e}")
+        safe_send_message(message.chat.id, "❌ Could not start post wizard.")
+
+@bot.message_handler(commands=['cancelpost'])
+def handle_cancelpost(message):
+    try:
+        if not require_admin(message):
+            return
+        if _wizard_get(message.chat.id):
+            _wizard_clear(message.chat.id)
+            safe_send_message(message.chat.id, "🛑 Post wizard cancelled.")
+        else:
+            safe_send_message(message.chat.id, "ℹ️ No active post wizard.")
+    except Exception as e:
+        logger.error(f"Cancel post wizard error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to cancel post wizard.")
+
+@bot.message_handler(
+    func=lambda m: _wizard_get(getattr(getattr(m, "chat", None), "id", 0)) is not None,
+    content_types=['text', 'photo', 'video', 'audio', 'document', 'animation', 'voice']
+)
+def handle_postwizard_input(message):
+    """Capture guided posting inputs for admins while wizard is active."""
+    try:
+        state = _wizard_get(message.chat.id)
+        if not state:
+            return
+        if not is_admin_user(get_actor_user_id(message)):
+            _wizard_clear(message.chat.id)
+            return
+
+        step = state.get("step")
+
+        if step == "await_content":
+            payload = _extract_broadcast_payload_from_message(message)
+            if not payload:
+                safe_send_message(
+                    message.chat.id,
+                    "❌ Unsupported content for wizard.\n"
+                    "Send text/photo/video/audio/document/animation/voice."
+                )
+                return
+            state["payload"] = payload
+            state["step"] = "await_button_text"
+            _wizard_set(message.chat.id, state)
+            safe_send_message(
+                message.chat.id,
+                "Step 2/3: Send button text (example: `Join Channel`) or type `skip` for no button."
+            )
+            return
+
+        if step == "await_button_text":
+            if not getattr(message, "text", None):
+                safe_send_message(message.chat.id, "Please send text for button label, or `skip`.")
+                return
+            decision = message.text.strip()
+            if decision.lower() == "skip":
+                state["button_text"] = None
+                state["button_url"] = None
+                state["step"] = "confirm"
+            else:
+                state["button_text"] = decision
+                state["step"] = "await_button_url"
+            _wizard_set(message.chat.id, state)
+            if state["step"] == "await_button_url":
+                safe_send_message(
+                    message.chat.id,
+                    "Step 3/3: Send the button URL (must start with `http://` or `https://`).\n"
+                    "Or type `skip` to send without button."
+                )
+            else:
+                markup = InlineKeyboardMarkup()
+                markup.add(
+                    InlineKeyboardButton("✅ Send now", callback_data="postwiz_send"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="postwiz_cancel")
+                )
+                safe_send_message(
+                    message.chat.id,
+                    "Ready to broadcast.\nPress *Send now* to publish to all known users.",
+                    reply_markup=markup
+                )
+            return
+
+        if step == "await_button_url":
+            if not getattr(message, "text", None):
+                safe_send_message(message.chat.id, "Send a valid URL or `skip`.")
+                return
+            decision = message.text.strip()
+            if decision.lower() == "skip":
+                state["button_text"] = None
+                state["button_url"] = None
+            elif _is_valid_http_url(decision):
+                state["button_url"] = decision
+            else:
+                safe_send_message(message.chat.id, "❌ Invalid URL. Send full URL like `https://example.com` or `skip`.")
+                return
+            state["step"] = "confirm"
+            _wizard_set(message.chat.id, state)
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton("✅ Send now", callback_data="postwiz_send"),
+                InlineKeyboardButton("❌ Cancel", callback_data="postwiz_cancel")
+            )
+            safe_send_message(
+                message.chat.id,
+                "Ready to broadcast.\nPress *Send now* to publish to all known users.",
+                reply_markup=markup
+            )
+            return
+    except Exception as e:
+        logger.error(f"Post wizard input error: {e}")
 
 # ============================================================================
 # 🎨 DRAW COMMANDS (MODEL-SPECIFIC)
@@ -1920,7 +2118,33 @@ def handle_all_messages(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     try:
-        if call.data == "start_chat":
+        if call.data == "postwiz_send":
+            if not require_admin(call.message):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            state = _wizard_get(call.message.chat.id)
+            if not state or state.get("step") != "confirm" or not state.get("payload"):
+                bot.answer_callback_query(call.id, "No active post wizard.")
+                safe_send_message(call.message.chat.id, "ℹ️ No active post wizard. Use `/postwizard`.")
+                return
+            bot.answer_callback_query(call.id, "Broadcasting...")
+            delivered, failed = _broadcast_payload_to_users(
+                payload=state["payload"],
+                button_text=state.get("button_text"),
+                button_url=state.get("button_url")
+            )
+            _wizard_clear(call.message.chat.id)
+            safe_send_message(
+                call.message.chat.id,
+                f"✅ Post sent.\nDelivered: {delivered}\nFailed: {failed}"
+            )
+
+        elif call.data == "postwiz_cancel":
+            _wizard_clear(call.message.chat.id)
+            bot.answer_callback_query(call.id, "Cancelled")
+            safe_send_message(call.message.chat.id, "🛑 Post wizard cancelled.")
+
+        elif call.data == "start_chat":
             bot.answer_callback_query(call.id, "Let's chat!")
             safe_send_message(call.message.chat.id, 
                 "💬 *Chat Activated!*\n\n"

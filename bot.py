@@ -544,9 +544,30 @@ def is_admin_user(user_id):
     except:
         return False
 
-def get_actor_user_id(message):
-    """Best-effort actor id resolver for private/group/channel edge-cases."""
-    uid = getattr(getattr(message, "from_user", None), "id", None)
+def _get_chat_id(update_obj):
+    """Support both Message and CallbackQuery-like objects."""
+    chat = getattr(update_obj, "chat", None)
+    if chat and getattr(chat, "id", None) is not None:
+        return chat.id
+    msg = getattr(update_obj, "message", None)
+    chat = getattr(msg, "chat", None)
+    if chat and getattr(chat, "id", None) is not None:
+        return chat.id
+    return None
+
+def get_actor_user_id(update_obj):
+    """Best-effort actor id resolver for Message and CallbackQuery."""
+    # CallbackQuery user (the person who clicked a button)
+    uid = getattr(getattr(update_obj, "from_user", None), "id", None)
+    if uid is not None:
+        try:
+            return int(uid)
+        except:
+            pass
+
+    # Fallback to message.from_user when wrapper object has .message
+    msg = getattr(update_obj, "message", None)
+    uid = getattr(getattr(msg, "from_user", None), "id", None)
     if uid is not None:
         try:
             return int(uid)
@@ -554,7 +575,7 @@ def get_actor_user_id(message):
             pass
 
     # In private chats, chat.id is the user id.
-    chat = getattr(message, "chat", None)
+    chat = getattr(update_obj, "chat", None) or getattr(msg, "chat", None)
     chat_id = getattr(chat, "id", None)
     chat_type = getattr(chat, "type", "")
     if chat_id is not None and chat_type == "private":
@@ -565,26 +586,30 @@ def get_actor_user_id(message):
 
     return None
 
-def require_admin(message):
-    uid = get_actor_user_id(message)
+def require_admin(update_obj):
+    uid = get_actor_user_id(update_obj)
+    chat_id = _get_chat_id(update_obj)
     if not is_admin_user(uid):
-        safe_send_message(
-            message.chat.id,
-            "⛔ Admin only command.\n"
-            f"Detected ID: `{uid}`\n"
-            f"Main Admin: `{MAIN_ADMIN_ID}`\n"
-            "Use `/myid` in private chat and share the value if this is wrong."
-        )
+        if chat_id:
+            safe_send_message(
+                chat_id,
+                "⛔ Admin only command.\n"
+                f"Detected ID: `{uid}`\n"
+                f"Main Admin: `{MAIN_ADMIN_ID}`\n"
+                "Use `/myid` in private chat and share the value if this is wrong."
+            )
         logger.warning(
             f"Admin check failed: uid={uid}, main={MAIN_ADMIN_ID}, admins={sorted(get_effective_admin_ids())}"
         )
         return False
     return True
 
-def require_main_admin(message):
-    uid = get_actor_user_id(message)
+def require_main_admin(update_obj):
+    uid = get_actor_user_id(update_obj)
+    chat_id = _get_chat_id(update_obj)
     if uid not in MAIN_ADMIN_IDS:
-        safe_send_message(message.chat.id, "⛔ Main admin only command.")
+        if chat_id:
+            safe_send_message(chat_id, "⛔ Main admin only command.")
         logger.warning(f"Main admin check failed: uid={uid}, main={MAIN_ADMIN_ID}")
         return False
     return True
@@ -2119,7 +2144,7 @@ def handle_all_messages(message):
 def handle_callback(call):
     try:
         if call.data == "postwiz_send":
-            if not require_admin(call.message):
+            if not require_admin(call):
                 bot.answer_callback_query(call.id, "Admin only")
                 return
             state = _wizard_get(call.message.chat.id)

@@ -980,19 +980,10 @@ class ImageGenerator:
 # 🚀 START COMMAND (FIXED)
 # ============================================================================
 def play_intro_animation(chat_id):
-    """Render a short Telegram-friendly boot animation by editing one message."""
-    logo = (
-        "ARTOVIX AI CORE\n"
-        "==============="
-    )
+    """Render a very short Telegram-friendly intro animation."""
     frames = [
-        "```text\n[SYSTEM MALFUNCTION]\n!@#$%^&*()_+<>?:{}\n```",
-        "```text\n[SYSTEM MALFUNCTION]\n^&*()_+<>?:{}!@#$%\n```",
-        f"```text\n{logo}\n\n>> CORE STABILIZED...\n```",
-        f"```text\n{logo}\n\nNeural Link    [####------] 40%\n```",
-        f"```text\n{logo}\n\nNeural Link    [##########] READY\nQuantum Gates  [#####-----] 50%\n```",
-        f"```text\n{logo}\n\nNeural Link    [##########] READY\nQuantum Gates  [##########] OPEN\nArtovix Core   [##########] SYNCED\n```",
-        "⚡ *ARTOVIX AI v4.0 DEPLOYED*\nProtocol: Advanced Assistance | Level: Elite"
+        "⚡ *Starting Artovix...*",
+        "✅ *Artovix is ready.*"
     ]
 
     msg = None
@@ -1007,7 +998,7 @@ def play_intro_animation(chat_id):
                     message_id=msg.message_id,
                     parse_mode="Markdown"
                 )
-            time.sleep(0.35 if i < len(frames) - 1 else 0.2)
+            time.sleep(0.25)
         except Exception:
             # Keep /start resilient; intro animation should never block bot usage.
             break
@@ -1017,32 +1008,16 @@ def start_command(message):
     try:
         play_intro_animation(message.chat.id)
 
-        welcome_msg = """🌟 *Welcome to Artovix 2026!* 🌟
+        welcome_msg = """👋 *Welcome to Artovix!*
 
-I'm your AI assistant powered by Groq's Llama 3.3 70B!
+I can help with:
+• 💬 Chat and Q&A
+• 🎨 Images: `/draw [prompt]`
+• 🔍 Search: `/search [query]`
+• 💻 Code: `/code [question]`
+• 🖼️ Vision: send a photo
 
-🎯 *QUICK START:*
-1. 💬 **Chat** - Just type your message
-2. 🎨 **AI Images** - `/flux`, `/pollin`, `/art`, or `/draw`
-3. 🎙️ **Voice** - Send a voice message
-4. 🖼️ **Vision** - Send a photo to analyze
-5. 🔍 **Search** - `/search [question]`
-
-🛠️ *IMAGE COMMANDS:*
-`/flux` - High-quality (FLUX.1-dev)
-`/pollin` - Fast & Reliable
-`/art` - Creative/Artistic styles
-`/draw` - Your default model
-
-🛠️ *UTILITY COMMANDS:*
-`/help` - Command reference
-`/search` - Search information
-`/code` - Analyze code
-`/stats` - View analytics
-`/reset` - Clear memory
-`/status` - Bot health
-
-*Ready to begin?* 🚀"""
+Use `/help` to see all commands."""
 
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(

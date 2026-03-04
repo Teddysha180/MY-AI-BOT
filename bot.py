@@ -1050,10 +1050,18 @@ class ImageGenerator:
 # 🚀 START COMMAND (FIXED)
 # ============================================================================
 def play_intro_animation(chat_id):
-    """Render a very short Telegram-friendly intro animation."""
+    """Render an epic Telegram-friendly boot animation."""
     frames = [
-        "⚡ *Starting Artovix...*",
-        "✅ *Artovix is ready.*"
+        "```text\n[ ARTOVIX CORE ]\nInitializing...\n```",
+        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [##--------] 20%\n```",
+        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [####------] 40%\n```",
+        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [######----] 60%\n```",
+        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [########--] 80%\n```",
+        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [##########] 100%\n```",
+        "```text\nLinking subsystems...\nAI Engine      [ONLINE]\nVision Core    [ONLINE]\nVoice Engine   [ONLINE]\n```",
+        "```text\nCalibrating response matrix...\nLatency: 11ms\nStability: 99.98%\n```",
+        "```text\nSecurity handshake complete.\nChannel gate verified.\nUser session ready.\n```",
+        "⚡ *ARTOVIX READY*\n✅ Systems synced. Launching interface..."
     ]
 
     msg = None
@@ -1068,7 +1076,7 @@ def play_intro_animation(chat_id):
                     message_id=msg.message_id,
                     parse_mode="Markdown"
                 )
-            time.sleep(0.25)
+            time.sleep(0.38 if i < len(frames) - 1 else 0.2)
         except Exception:
             # Keep /start resilient; intro animation should never block bot usage.
             break

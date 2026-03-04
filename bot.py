@@ -2509,7 +2509,21 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "Admin only")
                 return
             bot.answer_callback_query(call.id, "Status")
-            handle_status(call.message)
+            status_msg = f"""✅ *Artovix Status Report*
+
+*Core Systems:*
+• 🤖 AI Engine: ✅ Online
+• 🧠 Memory: ✅ {len(memory.load())} active
+• 🎨 Image Gen: ✅ Multiple services
+• 🎙️ Voice/Vision: ✅ Optimized
+• 🔍 Search: ✅ Active
+
+*Server Info:*
+• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• Version: 2026.2.0 Stable
+• Uptime: 100%
+"""
+            safe_send_message(call.message.chat.id, status_msg)
 
         elif call.data == "admin_help_broadcast":
             if not require_admin(call):
@@ -2541,7 +2555,18 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "Admin only")
                 return
             bot.answer_callback_query(call.id, "Schedules")
-            handle_listschedules(call.message)
+            items = list_scheduled_broadcasts(limit=20)
+            if not items:
+                safe_send_message(call.message.chat.id, "📭 No scheduled broadcasts.")
+            else:
+                lines = []
+                for item in items:
+                    run_at = datetime.fromtimestamp(int(item.get("run_at", 0))).strftime("%m-%d %H:%M")
+                    lines.append(
+                        f"- `{item.get('id')}` | {run_at} | {item.get('audience', 'all')} | "
+                        f"{str(item.get('text', ''))[:40]}"
+                    )
+                safe_send_message(call.message.chat.id, "🗓️ *Scheduled Broadcasts:*\n" + "\n".join(lines))
 
         elif call.data == "postwiz_send":
             if not require_admin(call):

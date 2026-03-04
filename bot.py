@@ -1082,20 +1082,16 @@ def play_intro_animation(chat_id):
             break
 
 def send_welcome_panel(chat_id):
-    welcome_msg = """🌟 *Welcome to Artovix 2026!* 🌟
-Your AI assistant powered by Groq's Llama 3.3 70B.
+    welcome_msg = """👋 *Welcome to Artovix!*
 
-🎯 *Quick Start:*
-💬 Chat - Just type
-🎨 Images - `/flux` `/pollin` `/art` `/draw`
-🎙️ Voice - Send voice
-🖼️ Vision - Send a photo
-🔍 Search - `/search [question]`
+I can help with:
+• 💬 Chat and Q&A
+• 🎨 Images: `/draw [prompt]`
+• 🔍 Search: `/search [query]`
+• 💻 Code: `/code [question]`
+• 🖼️ Vision: send a photo
 
-🛠️ *Commands:*
-`/help` • `/code` • `/stats` • `/reset` • `/status`
-
-Ready? 🚀"""
+Use `/help` to see all commands."""
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(

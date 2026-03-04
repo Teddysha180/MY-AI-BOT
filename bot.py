@@ -66,6 +66,8 @@ CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
 CHAT_MODEL_FALLBACK = os.getenv("GROQ_CHAT_MODEL_FALLBACK", "llama-3.1-8b-instant")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
 VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
+REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "https://t.me/arts_of_drawings")
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()
 ADMIN_USER_IDS = {
     int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",")
     if x.strip().isdigit()
@@ -614,6 +616,74 @@ def require_main_admin(update_obj):
         return False
     return True
 
+def _channel_ref():
+    if REQUIRED_CHANNEL:
+        ref = REQUIRED_CHANNEL
+    else:
+        ref = REQUIRED_CHANNEL_URL
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("http://") or ref.startswith("https://"):
+        path = urlparse(ref).path.strip("/")
+        if path:
+            return f"@{path.split('/')[0]}"
+        return ""
+    if ref.startswith("@"):
+        return ref
+    return f"@{ref}"
+
+def _channel_url():
+    if REQUIRED_CHANNEL_URL and REQUIRED_CHANNEL_URL.startswith("http"):
+        return REQUIRED_CHANNEL_URL
+    ref = _channel_ref().lstrip("@")
+    return f"https://t.me/{ref}" if ref else ""
+
+def is_required_channel_member(user_id):
+    """Check whether a user joined the required channel."""
+    if user_id is None:
+        return False
+    if is_admin_user(user_id):
+        return True
+    channel = _channel_ref()
+    if not channel:
+        return True
+    try:
+        member = bot.get_chat_member(channel, int(user_id))
+        status = getattr(member, "status", "")
+        if status in ("creator", "administrator", "member"):
+            return True
+        if status == "restricted" and bool(getattr(member, "is_member", False)):
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Channel membership check failed for {user_id} in {channel}: {e}")
+        return False
+
+def send_join_required_prompt(chat_id):
+    channel_url = _channel_url()
+    markup = InlineKeyboardMarkup(row_width=1)
+    if channel_url:
+        markup.add(InlineKeyboardButton("📢 Join Channel", url=channel_url))
+    markup.add(InlineKeyboardButton("✅ I Joined", callback_data="check_joined"))
+    safe_send_message(
+        chat_id,
+        "🔒 *Join Required*\n\n"
+        "Please join our channel first to use this bot.\n"
+        "After joining, tap *I Joined*.",
+        reply_markup=markup
+    )
+
+def ensure_channel_access(update_obj):
+    """Block access for users who have not joined required channel."""
+    uid = get_actor_user_id(update_obj)
+    chat_id = _get_chat_id(update_obj)
+    if is_required_channel_member(uid):
+        return True
+    if chat_id:
+        send_join_required_prompt(chat_id)
+    return False
+
 def get_all_known_user_ids():
     user_ids = set()
     # Users in memory file
@@ -1003,31 +1073,38 @@ def play_intro_animation(chat_id):
             # Keep /start resilient; intro animation should never block bot usage.
             break
 
+def send_welcome_panel(chat_id):
+    welcome_msg = """🌟 *Welcome to Artovix 2026!* 🌟
+Your AI assistant powered by Groq's Llama 3.3 70B.
+
+🎯 *Quick Start:*
+💬 Chat - Just type
+🎨 Images - `/flux` `/pollin` `/art` `/draw`
+🎙️ Voice - Send voice
+🖼️ Vision - Send a photo
+🔍 Search - `/search [question]`
+
+🛠️ *Commands:*
+`/help` • `/code` • `/stats` • `/reset` • `/status`
+
+Ready? 🚀"""
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💬 Chat Now", callback_data="start_chat"),
+        InlineKeyboardButton("🎨 Draw Image", callback_data="generate_image"),
+        InlineKeyboardButton("💻 Code Help", callback_data="code_help"),
+        InlineKeyboardButton("🔍 Search Web", callback_data="ask_question")
+    )
+    safe_send_message(chat_id, welcome_msg, reply_markup=markup)
+
 @bot.message_handler(commands=['start', 'artovix', 'hello'])
 def start_command(message):
     try:
+        if not ensure_channel_access(message):
+            return
         play_intro_animation(message.chat.id)
-
-        welcome_msg = """👋 *Welcome to Artovix!*
-
-I can help with:
-• 💬 Chat and Q&A
-• 🎨 Images: `/draw [prompt]`
-• 🔍 Search: `/search [query]`
-• 💻 Code: `/code [question]`
-• 🖼️ Vision: send a photo
-
-Use `/help` to see all commands."""
-
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("💬 Chat Now", callback_data="start_chat"),
-            InlineKeyboardButton("🎨 Draw Image", callback_data="generate_image"),
-            InlineKeyboardButton("💻 Code Help", callback_data="code_help"),
-            InlineKeyboardButton("🔍 Search Web", callback_data="ask_question")
-        )
-        
-        safe_send_message(message.chat.id, welcome_msg, reply_markup=markup)
+        send_welcome_panel(message.chat.id)
         logger.info(f"✓ Start command from user {message.chat.id}")
         
     except Exception as e:
@@ -1041,6 +1118,8 @@ Use `/help` to see all commands."""
 def handle_draw(message):
     thinking_msg = None
     try:
+        if not ensure_channel_access(message):
+            return
         # Get prompt from command
         if message.text and len(message.text.split()) > 1:
             prompt = ' '.join(message.text.split()[1:])
@@ -1154,6 +1233,8 @@ def handle_draw(message):
 @bot.message_handler(commands=['search', 'find', 'google'])
 def handle_search(message):
     try:
+        if not ensure_channel_access(message):
+            return
         # Extract query
         if message.text and len(message.text.split()) > 1:
             query = ' '.join(message.text.split()[1:])
@@ -1237,6 +1318,8 @@ def handle_search(message):
 @bot.message_handler(commands=['code', 'program', 'debug'])
 def handle_code(message):
     try:
+        if not ensure_channel_access(message):
+            return
         # Extract code or question
         if message.text and len(message.text.split()) > 1:
             code_text = ' '.join(message.text.split()[1:])
@@ -1387,6 +1470,8 @@ def handle_stats(message):
 @bot.message_handler(commands=['reset'])
 def handle_reset(message):
     try:
+        if not ensure_channel_access(message):
+            return
         user_id = str(message.chat.id)
         user_data = memory.get_user_data(user_id)
         user_data["history"] = []
@@ -1433,6 +1518,8 @@ def handle_status(message):
 @bot.message_handler(commands=['help'])
 def handle_help(message):
     try:
+        if not ensure_channel_access(message):
+            return
         help_text = """🔧 *Artovix Command Reference*
 
 *Image Generation:*
@@ -1897,6 +1984,8 @@ def handle_model_selection(call):
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
     try:
+        if not ensure_channel_access(message):
+            return
         bot.send_chat_action(message.chat.id, 'upload_document')
         
         # Get voice file info
@@ -1943,6 +2032,8 @@ def handle_voice(message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
+        if not ensure_channel_access(message):
+            return
         bot.send_chat_action(message.chat.id, 'typing')
         
         # Get highest resolution photo
@@ -2006,6 +2097,8 @@ def handle_photo(message):
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     try:
+        if not ensure_channel_access(message):
+            return
         # Skip if empty or command
         if not message.text or message.text.startswith('/'):
             return
@@ -2118,7 +2211,15 @@ def handle_all_messages(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     try:
-        if call.data == "postwiz_send":
+        if call.data == "check_joined":
+            if ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Access granted ✅")
+                play_intro_animation(call.message.chat.id)
+                send_welcome_panel(call.message.chat.id)
+            else:
+                bot.answer_callback_query(call.id, "Please join channel first")
+
+        elif call.data == "postwiz_send":
             if not require_admin(call):
                 bot.answer_callback_query(call.id, "Admin only")
                 return
@@ -2145,6 +2246,9 @@ def handle_callback(call):
             safe_send_message(call.message.chat.id, "🛑 Post wizard cancelled.")
 
         elif call.data == "start_chat":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
             bot.answer_callback_query(call.id, "Let's chat!")
             safe_send_message(call.message.chat.id, 
                 "💬 *Chat Activated!*\n\n"
@@ -2156,6 +2260,9 @@ def handle_callback(call):
             )
         
         elif call.data == "generate_image":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
             bot.answer_callback_query(call.id, "Image generation!")
             safe_send_message(call.message.chat.id, 
                 "🎨 *Image Generator*\n\n"
@@ -2168,6 +2275,9 @@ def handle_callback(call):
             )
         
         elif call.data == "code_help":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
             bot.answer_callback_query(call.id, "Code help!")
             safe_send_message(call.message.chat.id, 
                 "💻 *Code Assistant*\n\n"
@@ -2181,6 +2291,9 @@ def handle_callback(call):
             )
         
         elif call.data == "ask_question":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
             bot.answer_callback_query(call.id, "Search!")
             safe_send_message(call.message.chat.id, 
                 "🔍 *Knowledge Search*\n\n"

@@ -1661,48 +1661,18 @@ def handle_help(message):
     try:
         if not ensure_channel_access(message):
             return
-        help_text = """🔧 *Artovix Command Reference*
-
-*Image Generation:*
-`/flux [prompt]` - High-quality (FLUX.1-dev)
-`/pollin [prompt]` - Fast & reliable generation
-`/art [prompt]` - Creative & artistic styles
-`/auto [prompt]` - Smart model selection
-`/draw [prompt]` - Use your preferred model
+        help_text = """🔧 *Artovix Help*
 
 *Main Commands:*
-`/start` - Welcome guide & features
-`/help` - This command list
-`/search [query]` - Search knowledge
-`/code [question/code]` - Code help
-`/stats` - View analytics dashboard
-`/reset` - Clear conversation memory
-`/status` - Check bot health
-`/myid` - Show your Telegram user/chat IDs
+`/start` - Open welcome panel
+`/draw [prompt]` - Generate images
+`/search [query]` - Search
+`/code [question]` - Code help
+`/reset` - Clear memory
+`/help` - Show this help
 
-*Admin Commands (admin only):*
-`/admin` - Open admin panel
-`/users` - Count known users
-`/admins` - List admins
-`/addadmin [user_id]` - Grant admin (or reply with command)
-`/deladmin [user_id]` - Remove dynamic admin (or reply)
-`/broadcast [text]` - Send text to all users
-`/broadcast7 [text]` - Send text to users active in 7 days
-`/broadcast30 [text]` - Send text to users active in 30 days
-`/schedulebroadcast <min> <audience> <text>` - Schedule text broadcast
-`/schedules` - List scheduled broadcasts
-`/cancelschedule [id]` - Cancel a scheduled broadcast
-`/post` - Reply to media/text and broadcast
-`/postwizard` - Guided broadcast (media/text + button)
-`/cancelpost` - Cancel current post wizard
-
-*Tips:*
-• Be descriptive for better images
-• Use `/draw` without a prompt to change your default model
-• Send photos to analyze them (Vision)
-• Send voice messages to transcribe (Whisper)
-
-*Need more help?* Just chat with me normally! 😊"""
+*Admin:*
+Use `/admin` to see all admin commands and tools."""
         
         safe_send_message(message.chat.id, help_text)
     except Exception as e:
@@ -1955,7 +1925,23 @@ def handle_admin_panel(message):
         )
         safe_send_message(
             message.chat.id,
-            "🛠️ *Admin Panel*\nChoose an action:",
+            "🛠️ *Admin Panel*\n\n"
+            "*Admin Commands (admin only):*\n"
+            "`/admin` - Open admin panel\n"
+            "`/users` - Count known users\n"
+            "`/admins` - List admins\n"
+            "`/addadmin <userid>` - Grant admin (or reply)\n"
+            "`/deladmin <userid>` - Remove dynamic admin (or reply)\n"
+            "`/broadcast <text>` - Send text to all users\n"
+            "`/broadcast7 <text>` - Send text to users active in 7 days\n"
+            "`/broadcast30 <text>` - Send text to users active in 30 days\n"
+            "`/schedulebroadcast <min> <audience> <text>` - Schedule text broadcast\n"
+            "`/schedules` - List scheduled broadcasts\n"
+            "`/cancelschedule <id>` - Cancel a scheduled broadcast\n"
+            "`/post` - Reply to media/text and broadcast\n"
+            "`/postwizard` - Guided broadcast (media/text + button)\n"
+            "`/cancelpost` - Cancel current post wizard\n\n"
+            "Choose an action:",
             reply_markup=markup
         )
     except Exception as e:

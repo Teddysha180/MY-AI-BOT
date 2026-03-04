@@ -268,6 +268,30 @@ class Analytics:
             logger.error(f"Analytics user ids error: {e}")
             return set()
 
+    def get_user_ids_active_in_days(self, days: int):
+        """Return distinct user IDs active in the last N days."""
+        try:
+            d = max(1, int(days))
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "SELECT DISTINCT user_id FROM metrics "
+                    "WHERE user_id IS NOT NULL AND user_id != '' "
+                    "AND timestamp > datetime('now', ?)",
+                    (f"-{d} day",)
+                )
+                rows = cursor.fetchall()
+                user_ids = set()
+                for row in rows:
+                    try:
+                        user_ids.add(int(str(row[0]).strip()))
+                    except:
+                        continue
+                return user_ids
+        except Exception as e:
+            logger.error(f"Analytics active user ids error: {e}")
+            return set()
+
 analytics = Analytics()
 
 # ============================================================================
@@ -698,16 +722,129 @@ def get_all_known_user_ids():
     # Never broadcast back to dummy/invalid ids
     return {uid for uid in user_ids if uid > 0}
 
-def broadcast_text_to_users(text):
+def get_target_user_ids(audience: str = "all"):
+    key = (audience or "all").strip().lower()
+    if key in ("all", "everyone"):
+        return get_all_known_user_ids()
+    if key in ("active7", "active_7d", "active-7d"):
+        return {uid for uid in analytics.get_user_ids_active_in_days(7) if uid > 0}
+    if key in ("active30", "active_30d", "active-30d"):
+        return {uid for uid in analytics.get_user_ids_active_in_days(30) if uid > 0}
+    return get_all_known_user_ids()
+
+def broadcast_text_to_users(text, audience="all"):
     delivered = 0
     failed = 0
-    for uid in get_all_known_user_ids():
+    targets = get_target_user_ids(audience)
+    for uid in targets:
         try:
             safe_send_message(uid, text)
             delivered += 1
         except Exception:
             failed += 1
     return delivered, failed
+
+SCHEDULE_FILE = "scheduled_broadcasts.json"
+SCHEDULE_LOCK = threading.Lock()
+SCHEDULER_STARTED = False
+
+def load_scheduled_broadcasts():
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception as e:
+        logger.error(f"Load schedule error: {e}")
+    return []
+
+def save_scheduled_broadcasts(items):
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Save schedule error: {e}")
+
+def create_scheduled_broadcast(admin_id: int, delay_minutes: int, text: str, audience: str = "all"):
+    delay_minutes = max(1, int(delay_minutes))
+    audience = (audience or "all").strip().lower()
+    now_ts = int(time.time())
+    run_at = now_ts + delay_minutes * 60
+    item = {
+        "id": f"sb_{now_ts}_{admin_id}",
+        "admin_id": int(admin_id),
+        "created_at": now_ts,
+        "run_at": run_at,
+        "delay_minutes": delay_minutes,
+        "audience": audience,
+        "text": text
+    }
+    with SCHEDULE_LOCK:
+        data = load_scheduled_broadcasts()
+        data.append(item)
+        save_scheduled_broadcasts(data)
+    return item
+
+def cancel_scheduled_broadcast(schedule_id: str):
+    with SCHEDULE_LOCK:
+        data = load_scheduled_broadcasts()
+        left = [x for x in data if x.get("id") != schedule_id]
+        changed = len(left) != len(data)
+        if changed:
+            save_scheduled_broadcasts(left)
+    return changed
+
+def list_scheduled_broadcasts(limit: int = 20):
+    with SCHEDULE_LOCK:
+        data = load_scheduled_broadcasts()
+    data.sort(key=lambda x: x.get("run_at", 0))
+    return data[:max(1, int(limit))]
+
+def scheduler_loop():
+    while True:
+        try:
+            now_ts = int(time.time())
+            due = []
+            keep = []
+            with SCHEDULE_LOCK:
+                data = load_scheduled_broadcasts()
+                for item in data:
+                    if int(item.get("run_at", 0)) <= now_ts:
+                        due.append(item)
+                    else:
+                        keep.append(item)
+                if len(keep) != len(data):
+                    save_scheduled_broadcasts(keep)
+
+            for item in due:
+                try:
+                    delivered, failed = broadcast_text_to_users(
+                        item.get("text", ""),
+                        audience=item.get("audience", "all")
+                    )
+                    admin_id = item.get("admin_id")
+                    if admin_id:
+                        safe_send_message(
+                            int(admin_id),
+                            f"⏰ Scheduled broadcast sent.\n"
+                            f"ID: `{item.get('id')}`\n"
+                            f"Audience: `{item.get('audience', 'all')}`\n"
+                            f"Delivered: {delivered}\nFailed: {failed}"
+                        )
+                except Exception as e:
+                    logger.error(f"Scheduled broadcast send error: {e}")
+            time.sleep(5)
+        except Exception as e:
+            logger.error(f"Scheduler loop error: {e}")
+            time.sleep(10)
+
+def start_scheduler_once():
+    global SCHEDULER_STARTED
+    if SCHEDULER_STARTED:
+        return
+    SCHEDULER_STARTED = True
+    Thread(target=scheduler_loop, daemon=True).start()
 
 POST_WIZARD_STATE = {}
 
@@ -1544,11 +1681,17 @@ def handle_help(message):
 `/myid` - Show your Telegram user/chat IDs
 
 *Admin Commands (admin only):*
+`/admin` - Open admin panel
 `/users` - Count known users
 `/admins` - List admins
 `/addadmin [user_id]` - Grant admin (or reply with command)
 `/deladmin [user_id]` - Remove dynamic admin (or reply)
 `/broadcast [text]` - Send text to all users
+`/broadcast7 [text]` - Send text to users active in 7 days
+`/broadcast30 [text]` - Send text to users active in 30 days
+`/schedulebroadcast <min> <audience> <text>` - Schedule text broadcast
+`/schedules` - List scheduled broadcasts
+`/cancelschedule [id]` - Cancel a scheduled broadcast
 `/post` - Reply to media/text and broadcast
 `/postwizard` - Guided broadcast (media/text + button)
 `/cancelpost` - Cancel current post wizard
@@ -1688,6 +1831,136 @@ def handle_broadcast(message):
     except Exception as e:
         logger.error(f"Broadcast command error: {e}")
         safe_send_message(message.chat.id, "❌ Broadcast failed.")
+
+@bot.message_handler(commands=['broadcast7'])
+def handle_broadcast7(message):
+    try:
+        if not require_admin(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2 or not parts[1].strip():
+            safe_send_message(message.chat.id, "Usage: `/broadcast7 your message`")
+            return
+        delivered, failed = broadcast_text_to_users(parts[1].strip(), audience="active7")
+        safe_send_message(message.chat.id, f"✅ Active-7d broadcast sent.\nDelivered: {delivered}\nFailed: {failed}")
+    except Exception as e:
+        logger.error(f"Broadcast7 command error: {e}")
+        safe_send_message(message.chat.id, "❌ Broadcast failed.")
+
+@bot.message_handler(commands=['broadcast30'])
+def handle_broadcast30(message):
+    try:
+        if not require_admin(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2 or not parts[1].strip():
+            safe_send_message(message.chat.id, "Usage: `/broadcast30 your message`")
+            return
+        delivered, failed = broadcast_text_to_users(parts[1].strip(), audience="active30")
+        safe_send_message(message.chat.id, f"✅ Active-30d broadcast sent.\nDelivered: {delivered}\nFailed: {failed}")
+    except Exception as e:
+        logger.error(f"Broadcast30 command error: {e}")
+        safe_send_message(message.chat.id, "❌ Broadcast failed.")
+
+@bot.message_handler(commands=['schedulebroadcast'])
+def handle_schedulebroadcast(message):
+    try:
+        if not require_admin(message):
+            return
+        # /schedulebroadcast <minutes> <all|active7|active30> <text>
+        parts = message.text.split(maxsplit=3) if message.text else []
+        if len(parts) < 4:
+            safe_send_message(
+                message.chat.id,
+                "Usage: `/schedulebroadcast <minutes> <all|active7|active30> <message>`\n"
+                "Example: `/schedulebroadcast 30 active7 New promo is live!`"
+            )
+            return
+        minutes_raw = parts[1].strip()
+        audience = parts[2].strip().lower()
+        text = parts[3].strip()
+        if not minutes_raw.isdigit():
+            safe_send_message(message.chat.id, "❌ Minutes must be a number.")
+            return
+        if audience not in ("all", "active7", "active30"):
+            safe_send_message(message.chat.id, "❌ Audience must be one of: `all`, `active7`, `active30`.")
+            return
+        item = create_scheduled_broadcast(
+            admin_id=int(get_actor_user_id(message)),
+            delay_minutes=int(minutes_raw),
+            text=text,
+            audience=audience
+        )
+        run_at = datetime.fromtimestamp(item["run_at"]).strftime("%Y-%m-%d %H:%M:%S")
+        safe_send_message(
+            message.chat.id,
+            f"⏰ Scheduled.\nID: `{item['id']}`\nWhen: `{run_at}`\nAudience: `{audience}`"
+        )
+    except Exception as e:
+        logger.error(f"Schedule broadcast command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to schedule broadcast.")
+
+@bot.message_handler(commands=['schedules', 'listschedules'])
+def handle_listschedules(message):
+    try:
+        if not require_admin(message):
+            return
+        items = list_scheduled_broadcasts(limit=20)
+        if not items:
+            safe_send_message(message.chat.id, "📭 No scheduled broadcasts.")
+            return
+        lines = []
+        for item in items:
+            run_at = datetime.fromtimestamp(int(item.get("run_at", 0))).strftime("%m-%d %H:%M")
+            lines.append(
+                f"- `{item.get('id')}` | {run_at} | {item.get('audience', 'all')} | "
+                f"{str(item.get('text', ''))[:40]}"
+            )
+        safe_send_message(message.chat.id, "🗓️ *Scheduled Broadcasts:*\n" + "\n".join(lines))
+    except Exception as e:
+        logger.error(f"List schedules command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to list schedules.")
+
+@bot.message_handler(commands=['cancelschedule'])
+def handle_cancelschedule(message):
+    try:
+        if not require_admin(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2:
+            safe_send_message(message.chat.id, "Usage: `/cancelschedule <schedule_id>`")
+            return
+        schedule_id = parts[1].strip()
+        if cancel_scheduled_broadcast(schedule_id):
+            safe_send_message(message.chat.id, f"✅ Cancelled schedule: `{schedule_id}`")
+        else:
+            safe_send_message(message.chat.id, f"ℹ️ Schedule not found: `{schedule_id}`")
+    except Exception as e:
+        logger.error(f"Cancel schedule command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to cancel schedule.")
+
+@bot.message_handler(commands=['admin'])
+def handle_admin_panel(message):
+    try:
+        if not require_admin(message):
+            return
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("👥 Users", callback_data="admin_users"),
+            InlineKeyboardButton("📊 Status", callback_data="admin_status"),
+            InlineKeyboardButton("📣 Broadcast all", callback_data="admin_help_broadcast"),
+            InlineKeyboardButton("🎯 Broadcast active7", callback_data="admin_help_broadcast7"),
+            InlineKeyboardButton("⏰ Schedule", callback_data="admin_help_schedule"),
+            InlineKeyboardButton("🗓️ Schedules", callback_data="admin_list_schedules"),
+        )
+        safe_send_message(
+            message.chat.id,
+            "🛠️ *Admin Panel*\nChoose an action:",
+            reply_markup=markup
+        )
+    except Exception as e:
+        logger.error(f"Admin panel command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to open admin panel.")
 
 @bot.message_handler(commands=['post'])
 def handle_post(message):
@@ -2223,6 +2496,53 @@ def handle_callback(call):
             else:
                 bot.answer_callback_query(call.id, "Please join channel first")
 
+        elif call.data == "admin_users":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Users")
+            users = sorted(get_all_known_user_ids())
+            safe_send_message(call.message.chat.id, f"👥 *Known Users:* {len(users)}")
+
+        elif call.data == "admin_status":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Status")
+            handle_status(call.message)
+
+        elif call.data == "admin_help_broadcast":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Broadcast")
+            safe_send_message(call.message.chat.id, "Use: `/broadcast your message`")
+
+        elif call.data == "admin_help_broadcast7":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Broadcast active7")
+            safe_send_message(call.message.chat.id, "Use: `/broadcast7 your message`")
+
+        elif call.data == "admin_help_schedule":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Schedule")
+            safe_send_message(
+                call.message.chat.id,
+                "Use:\n`/schedulebroadcast <minutes> <all|active7|active30> <message>`\n"
+                "Example:\n`/schedulebroadcast 30 active7 New update is live`"
+            )
+
+        elif call.data == "admin_list_schedules":
+            if not require_admin(call):
+                bot.answer_callback_query(call.id, "Admin only")
+                return
+            bot.answer_callback_query(call.id, "Schedules")
+            handle_listschedules(call.message)
+
         elif call.data == "postwiz_send":
             if not require_admin(call):
                 bot.answer_callback_query(call.id, "Admin only")
@@ -2383,6 +2703,7 @@ if __name__ == "__main__":
 
         # Attempt to remove webhook once before starting
         _delete_telegram_webhook()
+        start_scheduler_once()
 
         # Run polling in a loop so transient 409/other errors try to self-heal.
         while True:

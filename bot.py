@@ -1187,18 +1187,17 @@ class ImageGenerator:
 # 🚀 START COMMAND (FIXED)
 # ============================================================================
 def play_intro_animation(chat_id):
-    """Render an epic Telegram-friendly boot animation."""
+    """Render a red-branded Telegram-friendly boot animation."""
     frames = [
-        "```text\n[ ARTOVIX CORE ]\nInitializing...\n```",
-        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [##--------] 20%\n```",
-        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [####------] 40%\n```",
-        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [######----] 60%\n```",
-        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [########--] 80%\n```",
-        "```text\n[ ARTOVIX CORE ]\nBooting neural grid [##########] 100%\n```",
-        "```text\nLinking subsystems...\nAI Engine      [ONLINE]\nVision Core    [ONLINE]\nVoice Engine   [ONLINE]\n```",
-        "```text\nCalibrating response matrix...\nLatency: 11ms\nStability: 99.98%\n```",
-        "```text\nSecurity handshake complete.\nChannel gate verified.\nUser session ready.\n```",
-        "⚡ *ARTOVIX READY*\n✅ Systems synced. Launching interface..."
+        "```text\n[ ARTOVIX RED CORE ]\nPowering on...\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [##--------] 20%\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [####------] 40%\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [######----] 60%\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [########--] 80%\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [##########] 100%\n```",
+        "```text\nModules online:\nChat          [READY]\nImage Studio  [READY]\nCode Assist   [READY]\nVision        [READY]\n```",
+        "```text\nFinal checks...\nSecurity gate [OK]\nPerformance   [OPTIMAL]\nSession       [ACTIVE]\n```",
+        "🔴 *ARTOVIX RED READY*\n✅ Welcome sequence complete."
     ]
 
     msg = None
@@ -1219,23 +1218,28 @@ def play_intro_animation(chat_id):
             break
 
 def send_welcome_panel(chat_id):
-    welcome_msg = """👋 *Welcome to Artovix!*
+    welcome_msg = """🔴 *Welcome to Artovix Red*
 
-I can help with:
-• 💬 Chat and Q&A
-• 🎨 Images: `/draw [prompt]`
-• 🔍 Search: `/search [query]`
-• 💻 Code: `/code [question]`
-• 🖼️ Vision: send a photo
+*Simple flow:*
+1. Pick a mode below
+2. Send your request
+3. Get fast AI results
 
-Use `/help` to see all commands."""
+*Quick examples:*
+• Chat: just type
+• Image: `/draw red cyberpunk city`
+• Search: `/search latest AI tools`
+• Code: `/code fix this python error`
+• Vision: send a photo
+
+Use `/help` for full command list."""
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("💬 Chat Now", callback_data="start_chat"),
-        InlineKeyboardButton("🎨 Draw Image", callback_data="generate_image"),
-        InlineKeyboardButton("💻 Code Help", callback_data="code_help"),
-        InlineKeyboardButton("🔍 Search Web", callback_data="ask_question")
+        InlineKeyboardButton("🔴 Start Chat", callback_data="start_chat"),
+        InlineKeyboardButton("🎨 Create Image", callback_data="generate_image"),
+        InlineKeyboardButton("💻 Coding Help", callback_data="code_help"),
+        InlineKeyboardButton("🔍 Web Search", callback_data="ask_question")
     )
     safe_send_message(chat_id, welcome_msg, reply_markup=markup)
 
@@ -1661,18 +1665,23 @@ def handle_help(message):
     try:
         if not ensure_channel_access(message):
             return
-        help_text = """🔧 *Artovix Help*
+        help_text = """🔴 *Artovix Red Help*
 
-*Main Commands:*
-`/start` - Open welcome panel
-`/draw [prompt]` - Generate images
-`/search [query]` - Search
-`/code [question]` - Code help
-`/reset` - Clear memory
-`/help` - Show this help
+*Start in 3 steps:*
+1. `/start`
+2. Choose a mode
+3. Send your prompt
+
+*User Commands:*
+`/draw [prompt]` - Generate image
+`/search [query]` - Search web info
+`/code [question]` - Coding help
+`/reset` - Clear your chat memory
+`/status` - Bot health
+`/help` - This help
 
 *Admin:*
-Use `/admin` to see all admin commands and tools."""
+Use `/admin` for admin tools panel."""
         
         safe_send_message(message.chat.id, help_text)
     except Exception as e:
@@ -1925,23 +1934,19 @@ def handle_admin_panel(message):
         )
         safe_send_message(
             message.chat.id,
-            "🛠️ *Admin Panel*\n\n"
-            "*Admin Commands (admin only):*\n"
-            "`/admin` - Open admin panel\n"
-            "`/users` - Count known users\n"
-            "`/admins` - List admins\n"
-            "`/addadmin <userid>` - Grant admin (or reply)\n"
-            "`/deladmin <userid>` - Remove dynamic admin (or reply)\n"
-            "`/broadcast <text>` - Send text to all users\n"
-            "`/broadcast7 <text>` - Send text to users active in 7 days\n"
-            "`/broadcast30 <text>` - Send text to users active in 30 days\n"
-            "`/schedulebroadcast <min> <audience> <text>` - Schedule text broadcast\n"
-            "`/schedules` - List scheduled broadcasts\n"
-            "`/cancelschedule <id>` - Cancel a scheduled broadcast\n"
-            "`/post` - Reply to media/text and broadcast\n"
-            "`/postwizard` - Guided broadcast (media/text + button)\n"
-            "`/cancelpost` - Cancel current post wizard\n\n"
-            "Choose an action:",
+            "🔴 *Artovix Admin Panel*\n\n"
+            "*Step-based admin flow:*\n"
+            "1. Check audience: `/users`\n"
+            "2. Prepare post: `/postwizard`\n"
+            "3. Send now or schedule\n\n"
+            "*Main Admin Commands:*\n"
+            "`/users`  `/admins`\n"
+            "`/broadcast <text>`  `/broadcast7 <text>`  `/broadcast30 <text>`\n"
+            "`/schedulebroadcast <min> <all|active7|active30> <text>`\n"
+            "`/schedules`  `/cancelschedule <id>`\n"
+            "`/post`  `/postwizard`  `/cancelpost`\n"
+            "`/addadmin <userid>`  `/deladmin <userid>`\n\n"
+            "Choose an action below:",
             reply_markup=markup
         )
     except Exception as e:
@@ -2586,12 +2591,10 @@ def handle_callback(call):
                 return
             bot.answer_callback_query(call.id, "Let's chat!")
             safe_send_message(call.message.chat.id, 
-                "💬 *Chat Activated!*\n\n"
-                "Just type your message and I'll respond!\n\n"
-                "*Try asking:*\n"
-                "• What can you do?\n"
-                "• Tell me about AI\n"
-                "• Help me with a problem"
+                "🔴 *Chat Mode*\n\n"
+                "Step 1: Type any question.\n"
+                "Step 2: I reply with direct help.\n\n"
+                "Try: `How do I improve my CV?`"
             )
         
         elif call.data == "generate_image":
@@ -2600,13 +2603,11 @@ def handle_callback(call):
                 return
             bot.answer_callback_query(call.id, "Image generation!")
             safe_send_message(call.message.chat.id, 
-                "🎨 *Image Generator*\n\n"
-                "*Usage:* `/draw [description]`\n\n"
-                "*Quick examples:*\n"
-                "• `/draw sunset over mountains`\n"
-                "• `/draw cute robot futuristic city`\n"
-                "• `/draw magical forest glowing plants`\n\n"
-                "Be creative! 🎨"
+                "🎨 *Image Mode*\n\n"
+                "Step 1: Use `/draw [prompt]`\n"
+                "Step 2: Wait a few seconds\n"
+                "Step 3: Get your image\n\n"
+                "Example: `/draw luxury red sports car at night`"
             )
         
         elif call.data == "code_help":
@@ -2615,14 +2616,11 @@ def handle_callback(call):
                 return
             bot.answer_callback_query(call.id, "Code help!")
             safe_send_message(call.message.chat.id, 
-                "💻 *Code Assistant*\n\n"
-                "*Two ways to use:*\n"
-                "1. Ask: `/code how to [do something]`\n"
-                "2. Send code in:\n"
-                "```python\n"
-                "print('Hello World!')\n"
-                "```\n\n"
-                "*I can help with:* Python, JavaScript, Java, C++, etc."
+                "💻 *Code Mode*\n\n"
+                "Step 1: Ask with `/code [question]`\n"
+                "Step 2: Or paste your code directly\n"
+                "Step 3: Get fixes and explanation\n\n"
+                "Example: `/code why is my loop infinite?`"
             )
         
         elif call.data == "ask_question":
@@ -2631,13 +2629,10 @@ def handle_callback(call):
                 return
             bot.answer_callback_query(call.id, "Search!")
             safe_send_message(call.message.chat.id, 
-                "🔍 *Knowledge Search*\n\n"
-                "*Usage:* `/search [your question]`\n\n"
-                "*Examples:*\n"
-                "• `/search latest space discoveries`\n"
-                "• `/search how AI works in 2026`\n"
-                "• `/search best programming practices`\n\n"
-                "Ask me anything! 🌟"
+                "🔍 *Search Mode*\n\n"
+                "Step 1: Use `/search [query]`\n"
+                "Step 2: I fetch concise results\n\n"
+                "Example: `/search best laptop for python 2026`"
             )
         
     except Exception as e:

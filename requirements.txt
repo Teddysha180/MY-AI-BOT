@@ -6,3 +6,5 @@ requests==2.31.0
 python-dotenv==1.0.1
 flask
 gunicorn
+gTTS==2.5.4
+pypdf==4.3.1

@@ -11,10 +11,22 @@ import threading
 import traceback
 import time
 import base64
+import io
+import tempfile
 from urllib.parse import urlparse
 from flask import Flask
 from threading import Thread
 from dotenv import load_dotenv
+
+try:
+    from gtts import gTTS
+except Exception:
+    gTTS = None
+
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
 # Initialize Flask app for health checks (required by Hugging Face)
 app = Flask(__name__)
@@ -135,6 +147,10 @@ if not bot:
 
         def send_photo(self, *args, **kwargs):
             print("[DummyBot] send_photo called; BOT_TOKEN not configured.")
+            return None
+
+        def send_audio(self, *args, **kwargs):
+            print("[DummyBot] send_audio called; BOT_TOKEN not configured.")
             return None
 
         def delete_message(self, *args, **kwargs):
@@ -536,6 +552,109 @@ def safe_send_message(chat_id, text, **kwargs):
         if first_message is None:
             first_message = sent
     return first_message
+
+VOICE_REPLY_MODE_KEY = "voice_reply_mode"
+DOC_CONTEXT_KEY = "doc_context"
+DOC_NAME_KEY = "doc_name"
+DOC_UPDATED_KEY = "doc_updated_at"
+MAX_DOC_STORE_CHARS = 120000
+MAX_DOC_PROMPT_CHARS = 14000
+MAX_TTS_TEXT_CHARS = 1400
+
+def is_voice_reply_enabled(user_id):
+    return bool(memory.get_setting(str(user_id), VOICE_REPLY_MODE_KEY, False))
+
+def set_voice_reply_enabled(user_id, enabled):
+    memory.update_setting(str(user_id), VOICE_REPLY_MODE_KEY, bool(enabled))
+
+def _synthesize_audio_file(text):
+    """Create a temporary MP3 file from text. Returns file path or None."""
+    if not gTTS:
+        return None
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_TTS_TEXT_CHARS:
+        cleaned = cleaned[:MAX_TTS_TEXT_CHARS] + "..."
+    try:
+        fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
+        os.close(fd)
+        tts = gTTS(text=cleaned, lang="en")
+        tts.save(path)
+        return path
+    except Exception as e:
+        logger.error(f"TTS synthesis error: {e}")
+        return None
+
+def send_ai_reply(chat_id, text):
+    """Send AI reply as text or audio depending on user setting."""
+    if not is_voice_reply_enabled(chat_id):
+        return safe_send_message(chat_id, text)
+
+    audio_path = _synthesize_audio_file(text)
+    if not audio_path:
+        safe_send_message(
+            chat_id,
+            "🔈 Voice reply unavailable right now. Sending text instead."
+        )
+        return safe_send_message(chat_id, text)
+
+    try:
+        with open(audio_path, "rb") as f:
+            bot.send_audio(
+                chat_id,
+                f,
+                title="Artovix Voice Reply",
+                caption="🔈 Voice reply"
+            )
+        # Keep text too for copy/paste usability.
+        return safe_send_message(chat_id, text)
+    except Exception as e:
+        logger.error(f"Send audio reply error: {e}")
+        return safe_send_message(chat_id, text)
+    finally:
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+
+def _extract_text_from_document_bytes(file_name, raw_bytes):
+    """Extract text from supported document types."""
+    if not raw_bytes:
+        return None, "Empty file."
+
+    lowered = (file_name or "").lower()
+    ext = lowered.rsplit(".", 1)[-1] if "." in lowered else ""
+
+    try:
+        if ext == "pdf":
+            if not PdfReader:
+                return None, "PDF parser not available. Install `pypdf`."
+            reader = PdfReader(io.BytesIO(raw_bytes))
+            parts = []
+            for page in reader.pages:
+                parts.append(page.extract_text() or "")
+            text = "\n".join(parts).strip()
+            if not text:
+                return None, "Could not extract text from PDF."
+            return text, None
+
+        if ext in {"txt", "md", "csv", "json", "py", "js", "html", "css", "xml", "log"}:
+            text = raw_bytes.decode("utf-8", errors="ignore").strip()
+            if not text:
+                return None, "File appears empty after decoding."
+            return text, None
+
+        return None, "Unsupported file type. Use PDF/TXT/MD/CSV/JSON/code files."
+    except Exception as e:
+        logger.error(f"Document extraction error: {e}")
+        return None, "Failed to read that file."
+
+def store_user_document(user_id, file_name, text):
+    clipped = (text or "")[:MAX_DOC_STORE_CHARS]
+    memory.update_setting(str(user_id), DOC_CONTEXT_KEY, clipped)
+    memory.update_setting(str(user_id), DOC_NAME_KEY, file_name or "document")
+    memory.update_setting(str(user_id), DOC_UPDATED_KEY, datetime.now().isoformat())
 
 def load_dynamic_admin_ids():
     try:
@@ -1221,6 +1340,8 @@ MENU_CHAT = "🔴 Chat"
 MENU_DRAW = "🎨 Draw"
 MENU_SEARCH = "🔍 Search"
 MENU_CODE = "💻 Code"
+MENU_DOC = "📄 Ask Doc"
+MENU_VOICE = "🔈 Voice Mode"
 MENU_HELP = "❓ Help"
 MENU_RESET = "🧹 Reset"
 
@@ -1230,6 +1351,7 @@ def build_main_reply_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.row(MENU_CHAT, MENU_DRAW)
     kb.row(MENU_SEARCH, MENU_CODE)
+    kb.row(MENU_DOC, MENU_VOICE)
     kb.row(MENU_HELP, MENU_RESET)
     return kb
 
@@ -1252,6 +1374,8 @@ def send_welcome_panel(chat_id):
 • Image: `/draw red cyberpunk city`
 • Search: `/search latest AI tools`
 • Code: `/code fix this python error`
+• Docs: upload file + `/askdoc summarize`
+• Voice: `/voice on` for audio replies
 • Vision: send a photo
 
 Use `/help` for full command list."""
@@ -1691,6 +1815,8 @@ def handle_help(message):
 `/draw [prompt]` - Generate image
 `/search [query]` - Search web info
 `/code [question]` - Coding help
+`/askdoc [question]` - Ask from uploaded document
+`/voice on|off` - Voice reply mode
 `/reset` - Clear your chat memory
 `/status` - Bot health
 `/help` - This help
@@ -1702,6 +1828,112 @@ Use `/admin` for admin tools panel."""
     except Exception as e:
         logger.error(f"Help error: {e}")
         safe_send_message(message.chat.id, "Type /start to begin!")
+
+@bot.message_handler(commands=['voice'])
+def handle_voice_mode(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2:
+            current = "ON" if is_voice_reply_enabled(message.chat.id) else "OFF"
+            safe_send_message(
+                message.chat.id,
+                "🔈 *Voice Reply Mode*\n"
+                f"Current: *{current}*\n\n"
+                "Use:\n"
+                "`/voice on` - enable voice replies\n"
+                "`/voice off` - disable voice replies"
+            )
+            return
+
+        mode = parts[1].strip().lower()
+        if mode not in {"on", "off"}:
+            safe_send_message(message.chat.id, "Use `/voice on` or `/voice off`.")
+            return
+
+        enabled = mode == "on"
+        set_voice_reply_enabled(message.chat.id, enabled)
+        safe_send_message(
+            message.chat.id,
+            "✅ Voice replies enabled." if enabled else "✅ Voice replies disabled."
+        )
+    except Exception as e:
+        logger.error(f"Voice mode command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to update voice mode.")
+
+@bot.message_handler(commands=['askdoc', 'doc'])
+def handle_askdoc(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2:
+            doc_name = memory.get_setting(str(message.chat.id), DOC_NAME_KEY, None)
+            if doc_name:
+                safe_send_message(
+                    message.chat.id,
+                    f"📄 Active doc: *{doc_name}*\n"
+                    "Now ask:\n`/askdoc summarize key points`"
+                )
+            else:
+                safe_send_message(
+                    message.chat.id,
+                    "📄 Send a document first (PDF/TXT/MD/CSV/JSON), then ask:\n"
+                    "`/askdoc your question`"
+                )
+            return
+
+        doc_text = memory.get_setting(str(message.chat.id), DOC_CONTEXT_KEY, "")
+        doc_name = memory.get_setting(str(message.chat.id), DOC_NAME_KEY, "document")
+        if not doc_text:
+            safe_send_message(
+                message.chat.id,
+                "📄 I don't have a document from you yet.\n"
+                "Upload a PDF/TXT file first."
+            )
+            return
+
+        query = parts[1].strip()
+        bot.send_chat_action(message.chat.id, 'typing')
+
+        if not groq_client:
+            safe_send_message(message.chat.id, "🔌 *AI backend not configured.* Set `GROQ_API_KEY`.")
+            return
+
+        prompt = (
+            f"You are a document assistant. Use only the document content below when possible.\n\n"
+            f"Document name: {doc_name}\n"
+            f"Question: {query}\n\n"
+            f"Document content:\n{doc_text[:MAX_DOC_PROMPT_CHARS]}\n\n"
+            "Give a clear answer. If the answer is not in the document, say that briefly."
+        )
+
+        response = groq_client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=700
+        )
+        answer = clean_markdown(response.choices[0].message.content)
+        send_ai_reply(message.chat.id, f"📄 *Doc Answer ({doc_name}):*\n\n{answer}")
+        analytics.log_request(message.chat.id, len(query.split()), "doc_qa")
+    except Exception as e:
+        logger.error(f"AskDoc command error: {e}")
+        safe_send_message(message.chat.id, "❌ Doc question failed. Try again.")
+
+@bot.message_handler(commands=['docreset'])
+def handle_docreset(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        memory.update_setting(str(message.chat.id), DOC_CONTEXT_KEY, "")
+        memory.update_setting(str(message.chat.id), DOC_NAME_KEY, "")
+        memory.update_setting(str(message.chat.id), DOC_UPDATED_KEY, "")
+        safe_send_message(message.chat.id, "🧹 Document context cleared.")
+    except Exception as e:
+        logger.error(f"Doc reset error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to clear document context.")
 
 # ============================================================================
 # 🆔 ID DEBUG
@@ -2262,6 +2494,48 @@ def handle_model_selection(call):
         bot.answer_callback_query(call.id, "❌ Failed to update model.")
 
 # ============================================================================
+# 📄 DOCUMENT HANDLER (PDF / TEXT)
+# ============================================================================
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        bot.send_chat_action(message.chat.id, 'typing')
+
+        file_name = getattr(getattr(message, "document", None), "file_name", "document")
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+
+        text, error = _extract_text_from_document_bytes(file_name, downloaded_file)
+        if error:
+            safe_send_message(
+                message.chat.id,
+                f"📄 Could not process *{file_name}*.\n{error}"
+            )
+            return
+
+        store_user_document(message.chat.id, file_name, text)
+        word_count = len((text or "").split())
+        safe_send_message(
+            message.chat.id,
+            f"✅ Document loaded: *{file_name}*\n"
+            f"Words: {word_count}\n\n"
+            "Now ask:\n`/askdoc summarize this`\n"
+            "`/askdoc what are key points?`"
+        )
+        analytics.log_request(message.chat.id, min(word_count, 2000), "doc_upload")
+
+        if getattr(message, "caption", None):
+            caption_q = message.caption.strip()
+            if caption_q:
+                message.text = f"/askdoc {caption_q}"
+                handle_askdoc(message)
+    except Exception as e:
+        logger.error(f"Document handler error: {e}")
+        safe_send_message(message.chat.id, "📄 Failed to process document.")
+
+# ============================================================================
 # 🎙️ VOICE MESSAGES HANDLER
 # ============================================================================
 @bot.message_handler(content_types=['voice'])
@@ -2421,6 +2695,26 @@ def handle_all_messages(message):
                 reply_markup=build_main_reply_menu()
             )
             return
+        if text == MENU_DOC:
+            set_pending_mode(message.chat.id, "askdoc")
+            safe_send_message(
+                message.chat.id,
+                "📄 *Doc Mode*\n\n"
+                "1) Upload a document (PDF/TXT/MD/CSV/JSON)\n"
+                "2) Then send your question\n\n"
+                "Or send your question now if a doc is already loaded.",
+                reply_markup=build_main_reply_menu()
+            )
+            return
+        if text == MENU_VOICE:
+            current = is_voice_reply_enabled(message.chat.id)
+            set_voice_reply_enabled(message.chat.id, not current)
+            safe_send_message(
+                message.chat.id,
+                "✅ Voice replies enabled." if not current else "✅ Voice replies disabled.",
+                reply_markup=build_main_reply_menu()
+            )
+            return
         if text == MENU_HELP:
             set_pending_mode(message.chat.id, None)
             handle_help(message)
@@ -2431,7 +2725,7 @@ def handle_all_messages(message):
             return
 
         pending_mode = get_pending_mode(message.chat.id)
-        if pending_mode in {"draw", "search", "code"}:
+        if pending_mode in {"draw", "search", "code", "askdoc"}:
             set_pending_mode(message.chat.id, None)
             if pending_mode == "draw":
                 message.text = f"/draw {text}"
@@ -2444,6 +2738,10 @@ def handle_all_messages(message):
             if pending_mode == "code":
                 message.text = f"/code {text}"
                 handle_code(message)
+                return
+            if pending_mode == "askdoc":
+                message.text = f"/askdoc {text}"
+                handle_askdoc(message)
                 return
         
         logger.info(f"Message from {message.chat.id}: {message.text[:50]}...")
@@ -2502,8 +2800,8 @@ def handle_all_messages(message):
             user_data["history"] = history
             memory.save_user_data(user_id, user_data)
             
-            # Send reply
-            safe_send_message(message.chat.id, reply)
+            # Send reply (text or voice depending on user mode)
+            send_ai_reply(message.chat.id, reply)
             logger.info(f"Chat reply sent using model: {used_model}")
             
             # Log analytics
@@ -2757,6 +3055,8 @@ if __name__ == "__main__":
     print("🎨 /draw [prompt] - Generate images")
     print("🔍 /search [query] - Search knowledge")
     print("💻 /code [question] - Programming help")
+    print("📄 /askdoc [question] - Ask from uploaded document")
+    print("🔈 /voice on|off - Toggle voice replies")
     print("📊 /stats - View analytics")
     print("🧹 /reset - Clear memory")
     print("✅ /status - Bot health")

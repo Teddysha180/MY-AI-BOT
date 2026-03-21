@@ -15,6 +15,7 @@ import io
 import tempfile
 import re
 import unicodedata
+import asyncio
 from urllib.parse import urlparse
 from flask import Flask
 from threading import Thread
@@ -24,6 +25,11 @@ try:
     from gtts import gTTS
 except Exception:
     gTTS = None
+
+try:
+    import edge_tts
+except Exception:
+    edge_tts = None
 
 try:
     from pypdf import PdfReader
@@ -556,6 +562,7 @@ def safe_send_message(chat_id, text, **kwargs):
     return first_message
 
 VOICE_REPLY_MODE_KEY = "voice_reply_mode"
+VOICE_PROFILE_KEY = "voice_profile"
 DOC_CONTEXT_KEY = "doc_context"
 DOC_NAME_KEY = "doc_name"
 DOC_UPDATED_KEY = "doc_updated_at"
@@ -569,25 +576,37 @@ def is_voice_reply_enabled(user_id):
 def set_voice_reply_enabled(user_id, enabled):
     memory.update_setting(str(user_id), VOICE_REPLY_MODE_KEY, bool(enabled))
 
+def get_voice_profile(user_id):
+    profile = str(memory.get_setting(str(user_id), VOICE_PROFILE_KEY, "male")).lower()
+    return profile if profile in {"male", "female"} else "male"
+
+def set_voice_profile(user_id, profile):
+    p = str(profile).lower()
+    if p not in {"male", "female"}:
+        p = "male"
+    memory.update_setting(str(user_id), VOICE_PROFILE_KEY, p)
+
 def send_voice_mode_panel(chat_id):
     current = "ON" if is_voice_reply_enabled(chat_id) else "OFF"
+    profile = get_voice_profile(chat_id).upper()
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔈 Voice ON", callback_data="voice_mode_on"),
         InlineKeyboardButton("🔇 Voice OFF", callback_data="voice_mode_off"),
+        InlineKeyboardButton("👨 Male Voice", callback_data="voice_profile_male"),
+        InlineKeyboardButton("👩 Female Voice", callback_data="voice_profile_female"),
     )
     safe_send_message(
         chat_id,
         "🔈 *Voice Reply Options*\n"
-        f"Current mode: *{current}*\n\n"
+        f"Current mode: *{current}*\n"
+        f"Current profile: *{profile}*\n\n"
         "Choose your preferred mode:",
         reply_markup=markup
     )
 
-def _synthesize_audio_file(text):
+def _synthesize_audio_file(text, user_id=None):
     """Create a temporary MP3 file from text. Returns file path or None."""
-    if not gTTS:
-        return None
     cleaned = (text or "").strip()
     cleaned = cleaned.replace("```", " ")
     cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
@@ -598,18 +617,43 @@ def _synthesize_audio_file(text):
     cleaned = re.sub(r"https?://\S+", "", cleaned)  # urls
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-    # Remove emojis/symbol noise for clearer speech output.
+    # Strip emojis/symbol noise aggressively for clean speech:
+    # 1) drop symbol/control unicode categories
     cleaned = "".join(
         ch for ch in cleaned
-        if not unicodedata.category(ch).startswith("So")
+        if (
+            not unicodedata.category(ch).startswith("S") and
+            not unicodedata.category(ch).startswith("C")
+        )
     )
+    # 2) normalize accents and drop any remaining non-ascii chars
+    cleaned = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii")
+    # 3) keep only printable plain text
     cleaned = "".join(ch for ch in cleaned if ch.isprintable())
-    cleaned = cleaned.strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     if not cleaned:
         cleaned = "Here is your response."
     if len(cleaned) > MAX_TTS_TEXT_CHARS:
         cleaned = cleaned[:MAX_TTS_TEXT_CHARS] + "..."
+
+    profile = get_voice_profile(user_id if user_id is not None else 0)
+    edge_voice = "en-US-GuyNeural" if profile == "male" else "en-US-JennyNeural"
+
+    # Prefer Edge TTS for voice profile selection.
+    if edge_tts is not None:
+        try:
+            fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
+            os.close(fd)
+            communicate = edge_tts.Communicate(text=cleaned, voice=edge_voice)
+            asyncio.run(communicate.save(path))
+            return path
+        except Exception as e:
+            logger.error(f"Edge TTS synthesis error: {e}")
+
+    # Fallback to gTTS if Edge TTS is unavailable.
+    if not gTTS:
+        return None
     try:
         fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
         os.close(fd)
@@ -625,7 +669,7 @@ def send_ai_reply(chat_id, text):
     if not is_voice_reply_enabled(chat_id):
         return safe_send_message(chat_id, text)
 
-    audio_path = _synthesize_audio_file(text)
+    audio_path = _synthesize_audio_file(text, user_id=chat_id)
     if not audio_path:
         safe_send_message(
             chat_id,
@@ -1850,7 +1894,7 @@ def handle_help(message):
 `/search [query]` - Search web info
 `/code [question]` - Coding help
 `/askdoc [question]` - Ask from uploaded document
-`/voice on|off` - Voice reply mode
+`/voice on|off|male|female` - Voice reply mode/profile
 `/reset` - Clear your chat memory
 `/status` - Bot health
 `/help` - This help
@@ -1874,8 +1918,13 @@ def handle_voice_mode(message):
             return
 
         mode = parts[1].strip().lower()
+        if mode in {"male", "female"}:
+            set_voice_profile(message.chat.id, mode)
+            safe_send_message(message.chat.id, f"✅ Voice profile set to *{mode.upper()}*.")
+            return
+
         if mode not in {"on", "off"}:
-            safe_send_message(message.chat.id, "Use `/voice on`, `/voice off`, or `/voice` for options.")
+            safe_send_message(message.chat.id, "Use `/voice on`, `/voice off`, `/voice male`, `/voice female`, or `/voice` for options.")
             return
 
         enabled = mode == "on"
@@ -3051,6 +3100,30 @@ def handle_callback(call):
                 "✅ Voice replies disabled.",
                 reply_markup=build_main_reply_menu()
             )
+
+        elif call.data == "voice_profile_male":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_profile(call.message.chat.id, "male")
+            bot.answer_callback_query(call.id, "Male voice selected")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice profile set to *MALE*.",
+                reply_markup=build_main_reply_menu()
+            )
+
+        elif call.data == "voice_profile_female":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_profile(call.message.chat.id, "female")
+            bot.answer_callback_query(call.id, "Female voice selected")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice profile set to *FEMALE*.",
+                reply_markup=build_main_reply_menu()
+            )
         
     except Exception as e:
         logger.error(f"Callback error: {e}")
@@ -3100,7 +3173,7 @@ if __name__ == "__main__":
     print("🔍 /search [query] - Search knowledge")
     print("💻 /code [question] - Programming help")
     print("📄 /askdoc [question] - Ask from uploaded document")
-    print("🔈 /voice on|off - Toggle voice replies")
+    print("🔈 /voice on|off|male|female - Voice mode/profile")
     print("📊 /stats - View analytics")
     print("🧹 /reset - Clear memory")
     print("✅ /status - Bot health")

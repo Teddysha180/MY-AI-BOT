@@ -5,7 +5,7 @@ import logging
 import requests
 from datetime import datetime
 from groq import Groq
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 import sqlite3
 import threading
 import traceback
@@ -1217,6 +1217,28 @@ def play_intro_animation(chat_id):
             # Keep /start resilient; intro animation should never block bot usage.
             break
 
+MENU_CHAT = "🔴 Chat"
+MENU_DRAW = "🎨 Draw"
+MENU_SEARCH = "🔍 Search"
+MENU_CODE = "💻 Code"
+MENU_HELP = "❓ Help"
+MENU_RESET = "🧹 Reset"
+
+PENDING_MODE_KEY = "pending_mode"
+
+def build_main_reply_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.row(MENU_CHAT, MENU_DRAW)
+    kb.row(MENU_SEARCH, MENU_CODE)
+    kb.row(MENU_HELP, MENU_RESET)
+    return kb
+
+def set_pending_mode(user_id, mode):
+    memory.update_setting(str(user_id), PENDING_MODE_KEY, mode)
+
+def get_pending_mode(user_id):
+    return memory.get_setting(str(user_id), PENDING_MODE_KEY, None)
+
 def send_welcome_panel(chat_id):
     welcome_msg = """🔴 *Welcome to Artovix Red*
 
@@ -1234,14 +1256,7 @@ def send_welcome_panel(chat_id):
 
 Use `/help` for full command list."""
 
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🔴 Start Chat", callback_data="start_chat"),
-        InlineKeyboardButton("🎨 Create Image", callback_data="generate_image"),
-        InlineKeyboardButton("💻 Coding Help", callback_data="code_help"),
-        InlineKeyboardButton("🔍 Web Search", callback_data="ask_question")
-    )
-    safe_send_message(chat_id, welcome_msg, reply_markup=markup)
+    safe_send_message(chat_id, welcome_msg, reply_markup=build_main_reply_menu())
 
 @bot.message_handler(commands=['start', 'artovix', 'hello'])
 def start_command(message):
@@ -2370,6 +2385,66 @@ def handle_all_messages(message):
         # Skip if empty or command
         if not message.text or message.text.startswith('/'):
             return
+
+        text = message.text.strip()
+
+        # Reply-keyboard flow (easy mode)
+        if text == MENU_CHAT:
+            set_pending_mode(message.chat.id, None)
+            safe_send_message(
+                message.chat.id,
+                "🔴 *Chat mode active.*\nJust type normally and I will reply.",
+                reply_markup=build_main_reply_menu()
+            )
+            return
+        if text == MENU_DRAW:
+            set_pending_mode(message.chat.id, "draw")
+            safe_send_message(
+                message.chat.id,
+                "🎨 Send your image prompt now.\nExample: `luxury red sports car at night`",
+                reply_markup=build_main_reply_menu()
+            )
+            return
+        if text == MENU_SEARCH:
+            set_pending_mode(message.chat.id, "search")
+            safe_send_message(
+                message.chat.id,
+                "🔍 Send what you want to search now.\nExample: `latest AI tools in 2026`",
+                reply_markup=build_main_reply_menu()
+            )
+            return
+        if text == MENU_CODE:
+            set_pending_mode(message.chat.id, "code")
+            safe_send_message(
+                message.chat.id,
+                "💻 Send your coding question or snippet now.",
+                reply_markup=build_main_reply_menu()
+            )
+            return
+        if text == MENU_HELP:
+            set_pending_mode(message.chat.id, None)
+            handle_help(message)
+            return
+        if text == MENU_RESET:
+            set_pending_mode(message.chat.id, None)
+            handle_reset(message)
+            return
+
+        pending_mode = get_pending_mode(message.chat.id)
+        if pending_mode in {"draw", "search", "code"}:
+            set_pending_mode(message.chat.id, None)
+            if pending_mode == "draw":
+                message.text = f"/draw {text}"
+                handle_draw(message)
+                return
+            if pending_mode == "search":
+                message.text = f"/search {text}"
+                handle_search(message)
+                return
+            if pending_mode == "code":
+                message.text = f"/code {text}"
+                handle_code(message)
+                return
         
         logger.info(f"Message from {message.chat.id}: {message.text[:50]}...")
         

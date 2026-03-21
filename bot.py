@@ -563,6 +563,7 @@ def safe_send_message(chat_id, text, **kwargs):
 
 VOICE_REPLY_MODE_KEY = "voice_reply_mode"
 VOICE_PROFILE_KEY = "voice_profile"
+VOICE_STYLE_KEY = "voice_style"
 DOC_CONTEXT_KEY = "doc_context"
 DOC_NAME_KEY = "doc_name"
 DOC_UPDATED_KEY = "doc_updated_at"
@@ -586,21 +587,36 @@ def set_voice_profile(user_id, profile):
         p = "male"
     memory.update_setting(str(user_id), VOICE_PROFILE_KEY, p)
 
+def get_voice_style(user_id):
+    style = str(memory.get_setting(str(user_id), VOICE_STYLE_KEY, "normal")).lower()
+    return style if style in {"soft", "normal", "fast"} else "normal"
+
+def set_voice_style(user_id, style):
+    s = str(style).lower()
+    if s not in {"soft", "normal", "fast"}:
+        s = "normal"
+    memory.update_setting(str(user_id), VOICE_STYLE_KEY, s)
+
 def send_voice_mode_panel(chat_id):
     current = "ON" if is_voice_reply_enabled(chat_id) else "OFF"
     profile = get_voice_profile(chat_id).upper()
+    style = get_voice_style(chat_id).upper()
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔈 Voice ON", callback_data="voice_mode_on"),
         InlineKeyboardButton("🔇 Voice OFF", callback_data="voice_mode_off"),
         InlineKeyboardButton("👨 Male Voice", callback_data="voice_profile_male"),
         InlineKeyboardButton("👩 Female Voice", callback_data="voice_profile_female"),
+        InlineKeyboardButton("🐢 Soft", callback_data="voice_style_soft"),
+        InlineKeyboardButton("⚡ Fast", callback_data="voice_style_fast"),
+        InlineKeyboardButton("🎚️ Normal", callback_data="voice_style_normal"),
     )
     safe_send_message(
         chat_id,
         "🔈 *Voice Reply Options*\n"
         f"Current mode: *{current}*\n"
         f"Current profile: *{profile}*\n\n"
+        f"Current style: *{style}*\n\n"
         "Choose your preferred mode:",
         reply_markup=markup
     )
@@ -638,6 +654,7 @@ def _synthesize_audio_file(text, user_id=None):
         cleaned = cleaned[:MAX_TTS_TEXT_CHARS] + "..."
 
     profile = get_voice_profile(user_id if user_id is not None else 0)
+    style = get_voice_style(user_id if user_id is not None else 0)
     male_edge_voices = [
         "en-US-GuyNeural",
         "en-US-ChristopherNeural",
@@ -651,6 +668,7 @@ def _synthesize_audio_file(text, user_id=None):
         "en-AU-NatashaNeural",
     ]
     edge_voice_candidates = male_edge_voices if profile == "male" else female_edge_voices
+    edge_rate = {"soft": "-18%", "normal": "+0%", "fast": "+18%"}.get(style, "+0%")
 
     # Prefer Edge TTS for voice profile selection.
     if edge_tts is not None:
@@ -660,7 +678,7 @@ def _synthesize_audio_file(text, user_id=None):
             try:
                 fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
                 os.close(fd)
-                communicate = edge_tts.Communicate(text=cleaned, voice=edge_voice)
+                communicate = edge_tts.Communicate(text=cleaned, voice=edge_voice, rate=edge_rate)
                 asyncio.run(communicate.save(path))
                 logger.info(f"Edge TTS voice selected: {edge_voice}")
                 return path
@@ -675,17 +693,13 @@ def _synthesize_audio_file(text, user_id=None):
         if last_err:
             logger.error(f"Edge TTS synthesis failed for all candidate voices: {last_err}")
 
-    # Do not fake male voice with generic fallback; this causes "female-like" output.
-    if profile == "male":
-        return None
-
-    # Fallback to gTTS only for non-male profile.
+    # Free fallback to gTTS for all profiles when Edge TTS is unavailable.
     if not gTTS:
         return None
     try:
         fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
         os.close(fd)
-        tts = gTTS(text=cleaned, lang="en")
+        tts = gTTS(text=cleaned, lang="en", slow=(style == "soft"))
         tts.save(path)
         return path
     except Exception as e:
@@ -697,20 +711,12 @@ def send_ai_reply(chat_id, text):
     if not is_voice_reply_enabled(chat_id):
         return safe_send_message(chat_id, text)
 
-    selected_profile = get_voice_profile(chat_id)
     audio_path = _synthesize_audio_file(text, user_id=chat_id)
     if not audio_path:
-        if selected_profile == "male":
-            safe_send_message(
-                chat_id,
-                "👨 Male voice is unavailable on this server right now.\n"
-                "Try again later, or switch to `/voice female`."
-            )
-        else:
-            safe_send_message(
-                chat_id,
-                "🔈 Voice reply unavailable right now. Sending text instead."
-            )
+        safe_send_message(
+            chat_id,
+            "🔈 Voice reply unavailable right now. Sending text instead."
+        )
         return safe_send_message(chat_id, text)
 
     try:
@@ -1960,8 +1966,17 @@ def handle_voice_mode(message):
             safe_send_message(message.chat.id, f"✅ Voice profile set to *{mode.upper()}*.")
             return
 
+        if mode in {"soft", "normal", "fast"}:
+            set_voice_style(message.chat.id, mode)
+            set_voice_reply_enabled(message.chat.id, True)
+            safe_send_message(message.chat.id, f"✅ Voice style set to *{mode.upper()}*.")
+            return
+
         if mode not in {"on", "off"}:
-            safe_send_message(message.chat.id, "Use `/voice on`, `/voice off`, `/voice male`, `/voice female`, or `/voice` for options.")
+            safe_send_message(
+                message.chat.id,
+                "Use `/voice on|off|male|female|soft|normal|fast` or `/voice` for options."
+            )
             return
 
         enabled = mode == "on"
@@ -3161,6 +3176,45 @@ def handle_callback(call):
             safe_send_message(
                 call.message.chat.id,
                 "✅ Voice profile set to *FEMALE* (voice mode ON).",
+                reply_markup=build_main_reply_menu()
+            )
+
+        elif call.data == "voice_style_soft":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_style(call.message.chat.id, "soft")
+            set_voice_reply_enabled(call.message.chat.id, True)
+            bot.answer_callback_query(call.id, "Voice style: soft")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice style set to *SOFT* (voice mode ON).",
+                reply_markup=build_main_reply_menu()
+            )
+
+        elif call.data == "voice_style_fast":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_style(call.message.chat.id, "fast")
+            set_voice_reply_enabled(call.message.chat.id, True)
+            bot.answer_callback_query(call.id, "Voice style: fast")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice style set to *FAST* (voice mode ON).",
+                reply_markup=build_main_reply_menu()
+            )
+
+        elif call.data == "voice_style_normal":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_style(call.message.chat.id, "normal")
+            set_voice_reply_enabled(call.message.chat.id, True)
+            bot.answer_callback_query(call.id, "Voice style: normal")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice style set to *NORMAL* (voice mode ON).",
                 reply_markup=build_main_reply_menu()
             )
         

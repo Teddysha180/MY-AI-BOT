@@ -5,7 +5,13 @@ import logging
 import requests
 from datetime import datetime
 from groq import Groq
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telebot.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+)
 import sqlite3
 import threading
 import traceback
@@ -16,6 +22,7 @@ import tempfile
 import re
 import unicodedata
 import asyncio
+from uuid import uuid4
 from urllib.parse import urlparse
 from flask import Flask
 from threading import Thread
@@ -147,6 +154,11 @@ if not bot:
                 return func
             return decorator
 
+        def inline_handler(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
         # Basic methods used across the code. They are no-ops when the real bot
         # isn't available.
         def send_message(self, *args, **kwargs):
@@ -177,6 +189,9 @@ if not bot:
             return None
 
         def answer_callback_query(self, *args, **kwargs):
+            return None
+
+        def answer_inline_query(self, *args, **kwargs):
             return None
 
         def get_me(self):
@@ -564,12 +579,21 @@ def safe_send_message(chat_id, text, **kwargs):
 VOICE_REPLY_MODE_KEY = "voice_reply_mode"
 VOICE_PROFILE_KEY = "voice_profile"
 VOICE_STYLE_KEY = "voice_style"
+LANG_MODE_KEY = "reply_language"
 DOC_CONTEXT_KEY = "doc_context"
 DOC_NAME_KEY = "doc_name"
 DOC_UPDATED_KEY = "doc_updated_at"
 MAX_DOC_STORE_CHARS = 120000
 MAX_DOC_PROMPT_CHARS = 14000
 MAX_TTS_TEXT_CHARS = 1400
+
+LANGUAGE_LABELS = {
+    "auto": "Auto",
+    "en": "English",
+    "am": "Amharic",
+    "ar": "Arabic",
+    "fr": "French",
+}
 
 def is_voice_reply_enabled(user_id):
     return bool(memory.get_setting(str(user_id), VOICE_REPLY_MODE_KEY, False))
@@ -596,6 +620,114 @@ def set_voice_style(user_id, style):
     if s not in {"soft", "normal", "fast"}:
         s = "normal"
     memory.update_setting(str(user_id), VOICE_STYLE_KEY, s)
+
+def get_user_language(user_id):
+    lang = str(memory.get_setting(str(user_id), LANG_MODE_KEY, "auto")).lower()
+    return lang if lang in LANGUAGE_LABELS else "auto"
+
+def set_user_language(user_id, lang):
+    l = str(lang).lower()
+    if l not in LANGUAGE_LABELS:
+        l = "auto"
+    memory.update_setting(str(user_id), LANG_MODE_KEY, l)
+
+def build_language_instruction(user_id):
+    lang = get_user_language(user_id)
+    if lang == "auto":
+        return "Reply in the user's language. If unclear, use concise English."
+    mapping = {
+        "en": "English",
+        "am": "Amharic",
+        "ar": "Arabic",
+        "fr": "French",
+    }
+    return f"Always reply in {mapping.get(lang, 'English')} unless explicitly asked otherwise."
+
+def send_language_panel(chat_id):
+    current = get_user_language(chat_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(("✅ " if current == "auto" else "") + "Auto", callback_data="lang_set_auto"),
+        InlineKeyboardButton(("✅ " if current == "en" else "") + "English", callback_data="lang_set_en"),
+        InlineKeyboardButton(("✅ " if current == "am" else "") + "Amharic", callback_data="lang_set_am"),
+        InlineKeyboardButton(("✅ " if current == "ar" else "") + "Arabic", callback_data="lang_set_ar"),
+        InlineKeyboardButton(("✅ " if current == "fr" else "") + "French", callback_data="lang_set_fr"),
+    )
+    safe_send_message(
+        chat_id,
+        "🌐 *Language Mode*\nChoose response language:",
+        reply_markup=markup
+    )
+
+def get_response_length(user_id):
+    value = str(memory.get_setting(str(user_id), RESPONSE_LENGTH_KEY, "medium")).lower()
+    return value if value in {"short", "medium", "long"} else "medium"
+
+def set_response_length(user_id, value):
+    v = str(value).lower()
+    if v not in {"short", "medium", "long"}:
+        v = "medium"
+    memory.update_setting(str(user_id), RESPONSE_LENGTH_KEY, v)
+
+def get_response_max_tokens(user_id):
+    length = get_response_length(user_id)
+    return {"short": 320, "medium": 700, "long": 1200}.get(length, 700)
+
+def send_response_length_panel(chat_id):
+    current = get_response_length(chat_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(("✅ " if current == "short" else "") + "Short", callback_data="resp_len_short"),
+        InlineKeyboardButton(("✅ " if current == "medium" else "") + "Medium", callback_data="resp_len_medium"),
+        InlineKeyboardButton(("✅ " if current == "long" else "") + "Long", callback_data="resp_len_long"),
+    )
+    safe_send_message(
+        chat_id,
+        "📏 *Response Length*\nChoose output size:",
+        reply_markup=markup
+    )
+
+def send_model_panel(chat_id):
+    current_model = memory.get_setting(chat_id, "image_model", "auto")
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(f"{'✅ ' if current_model == 'auto' else ''}Auto", callback_data="set_model_auto"),
+        InlineKeyboardButton(f"{'✅ ' if current_model == 'flux' else ''}Flux", callback_data="set_model_flux"),
+        InlineKeyboardButton(f"{'✅ ' if current_model == 'pollinations' else ''}Pollinations", callback_data="set_model_pollinations"),
+        InlineKeyboardButton(f"{'✅ ' if current_model == 'creative' else ''}Creative", callback_data="set_model_creative"),
+    )
+    safe_send_message(
+        chat_id,
+        "🧠 *Image Model*\nChoose your default image model:",
+        reply_markup=markup
+    )
+
+def send_settings_panel(chat_id):
+    length = get_response_length(chat_id).upper()
+    lang = LANGUAGE_LABELS.get(get_user_language(chat_id), "Auto")
+    voice_on = "ON" if is_voice_reply_enabled(chat_id) else "OFF"
+    voice_profile = get_voice_profile(chat_id).upper()
+    voice_style = get_voice_style(chat_id).upper()
+    image_model = str(memory.get_setting(chat_id, "image_model", "auto")).upper()
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🔈 Voice", callback_data="settings_voice"),
+        InlineKeyboardButton("🧠 Model", callback_data="settings_model"),
+        InlineKeyboardButton("🌐 Language", callback_data="settings_language"),
+        InlineKeyboardButton("📏 Length", callback_data="settings_length"),
+        InlineKeyboardButton("🧹 Reset Memory", callback_data="settings_reset_memory"),
+    )
+    safe_send_message(
+        chat_id,
+        "⚙️ *Settings*\n\n"
+        f"Voice: *{voice_on}* | {voice_profile} | {voice_style}\n"
+        f"Language: *{lang}*\n"
+        f"Image model: *{image_model}*\n"
+        f"Response length: *{length}*\n\n"
+        "Choose what to change:",
+        reply_markup=markup
+    )
 
 def send_voice_mode_panel(chat_id):
     current = "ON" if is_voice_reply_enabled(chat_id) else "OFF"
@@ -1462,17 +1594,20 @@ MENU_SEARCH = "🔍 Search"
 MENU_CODE = "💻 Code"
 MENU_DOC = "📄 Ask Doc"
 MENU_VOICE = "🔈 Voice Mode"
+MENU_SETTINGS = "⚙️ Settings"
 MENU_HELP = "❓ Help"
 MENU_RESET = "🧹 Reset"
 
 PENDING_MODE_KEY = "pending_mode"
+RESPONSE_LENGTH_KEY = "response_length"
 
 def build_main_reply_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.row(MENU_CHAT, MENU_DRAW)
     kb.row(MENU_SEARCH, MENU_CODE)
     kb.row(MENU_DOC, MENU_VOICE)
-    kb.row(MENU_HELP, MENU_RESET)
+    kb.row(MENU_SETTINGS, MENU_HELP)
+    kb.row(MENU_RESET)
     return kb
 
 def set_pending_mode(user_id, mode):
@@ -1492,6 +1627,7 @@ Tap a mode below, then send your prompt.
 `/code [question]`
 `/askdoc [question]`
 `/voice`
+`/lang`
 
 Use `/menu` or `/help` anytime."""
 
@@ -1937,6 +2073,8 @@ def handle_help(message):
 `/code [question]` - Code help
 `/askdoc [question]` - Ask from doc
 `/voice` - Voice options
+`/lang` - Language mode
+`/settings` - Open settings
 `/reset` - Clear memory
 `/admin` - Admin panel"""
         
@@ -1944,6 +2082,48 @@ def handle_help(message):
     except Exception as e:
         logger.error(f"Help error: {e}")
         safe_send_message(message.chat.id, "Type /start to begin!")
+
+@bot.message_handler(commands=['lang', 'language'])
+def handle_language_mode(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) < 2:
+            send_language_panel(message.chat.id)
+            return
+
+        choice = parts[1].strip().lower()
+        aliases = {
+            "auto": "auto",
+            "english": "en",
+            "en": "en",
+            "amharic": "am",
+            "am": "am",
+            "arabic": "ar",
+            "ar": "ar",
+            "french": "fr",
+            "fr": "fr",
+        }
+        lang = aliases.get(choice)
+        if not lang:
+            safe_send_message(message.chat.id, "Use `/lang` then choose, or `/lang en|am|ar|fr|auto`.")
+            return
+        set_user_language(message.chat.id, lang)
+        safe_send_message(message.chat.id, f"✅ Language set to *{LANGUAGE_LABELS.get(lang, 'Auto')}*.")
+    except Exception as e:
+        logger.error(f"Language mode command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to update language mode.")
+
+@bot.message_handler(commands=['settings'])
+def handle_settings(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        send_settings_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Settings command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to open settings.")
 
 @bot.message_handler(commands=['voice'])
 def handle_voice_mode(message):
@@ -2829,6 +3009,9 @@ def handle_all_messages(message):
         if text == MENU_VOICE:
             send_voice_mode_panel(message.chat.id)
             return
+        if text == MENU_SETTINGS:
+            send_settings_panel(message.chat.id)
+            return
         if text == MENU_HELP:
             set_pending_mode(message.chat.id, None)
             handle_help(message)
@@ -2865,8 +3048,9 @@ def handle_all_messages(message):
         history = user_data["history"]
         
         # Prepare conversation
+        language_instruction = build_language_instruction(message.chat.id)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLANGUAGE MODE:\n{language_instruction}"},
             *history[-4:],  # Last 2 exchanges
             {"role": "user", "content": message.text}
         ]
@@ -2881,13 +3065,14 @@ def handle_all_messages(message):
             local_messages = list(messages)
             reply_parts = []
             used_model = None
+            max_tokens_for_user = get_response_max_tokens(message.chat.id)
 
             # Auto-continue if model stops due to token limit.
             for _ in range(3):
                 part, used_model, finish_reason = groq_chat_with_fallback(
                     messages=local_messages,
                     temperature=0.7,
-                    max_tokens=700
+                    max_tokens=max_tokens_for_user
                 )
                 reply_parts.append(part.strip())
                 if finish_reason != "length":
@@ -2961,6 +3146,46 @@ def handle_all_messages(message):
             pass
 
 # ============================================================================
+# 🔎 INLINE MODE HANDLER (@bot query)
+# ============================================================================
+@bot.inline_handler(func=lambda q: True)
+def handle_inline_query(query):
+    try:
+        qtext = (getattr(query, "query", "") or "").strip()
+        if not qtext:
+            return
+        if not groq_client:
+            return
+
+        inline_user_id = getattr(getattr(query, "from_user", None), "id", 0)
+        language_instruction = build_language_instruction(inline_user_id)
+        prompt = (
+            "Answer briefly and clearly for Telegram inline mode.\n"
+            f"{language_instruction}\n\n"
+            f"User query: {qtext}"
+        )
+        response = groq_client.chat.completions.create(
+            model=CHAT_MODEL_FALLBACK,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=220
+        )
+        answer = clean_markdown(response.choices[0].message.content)
+
+        result = InlineQueryResultArticle(
+            id=str(uuid4()),
+            title=f"Artovix: {qtext[:40]}",
+            description=(answer[:100] + "...") if len(answer) > 100 else answer,
+            input_message_content=InputTextMessageContent(
+                f"🔴 *Artovix Red*\n\n{answer}",
+                parse_mode="Markdown"
+            )
+        )
+        bot.answer_inline_query(query.id, [result], cache_time=1, is_personal=True)
+    except Exception as e:
+        logger.error(f"Inline query error: {e}")
+
+# ============================================================================
 # 🎪 CALLBACK HANDLER
 # ============================================================================
 @bot.callback_query_handler(func=lambda call: True)
@@ -2973,6 +3198,66 @@ def handle_callback(call):
                 send_welcome_panel(call.message.chat.id)
             else:
                 bot.answer_callback_query(call.id, "Please join channel first")
+
+        elif str(call.data).startswith("lang_set_"):
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            lang = str(call.data).replace("lang_set_", "").strip().lower()
+            if lang not in LANGUAGE_LABELS:
+                bot.answer_callback_query(call.id, "Invalid language")
+                return
+            set_user_language(call.message.chat.id, lang)
+            bot.answer_callback_query(call.id, f"Language: {LANGUAGE_LABELS.get(lang)}")
+            send_language_panel(call.message.chat.id)
+
+        elif call.data == "settings_voice":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "Voice settings")
+            send_voice_mode_panel(call.message.chat.id)
+
+        elif call.data == "settings_model":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "Model settings")
+            send_model_panel(call.message.chat.id)
+
+        elif call.data == "settings_language":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "Language settings")
+            send_language_panel(call.message.chat.id)
+
+        elif call.data == "settings_length":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "Response length")
+            send_response_length_panel(call.message.chat.id)
+
+        elif call.data == "settings_reset_memory":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            user_id = str(call.message.chat.id)
+            user_data = memory.get_user_data(user_id)
+            user_data["history"] = []
+            memory.save_user_data(user_id, user_data)
+            bot.answer_callback_query(call.id, "Memory reset")
+            safe_send_message(call.message.chat.id, "🧹 Memory reset.")
+
+        elif call.data in {"resp_len_short", "resp_len_medium", "resp_len_long"}:
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            length_value = call.data.replace("resp_len_", "").strip().lower()
+            set_response_length(call.message.chat.id, length_value)
+            bot.answer_callback_query(call.id, f"Length: {length_value}")
+            send_response_length_panel(call.message.chat.id)
 
         elif call.data == "admin_users":
             if not require_admin(call):
@@ -3246,6 +3531,9 @@ if __name__ == "__main__":
     print("💻 /code [question] - Programming help")
     print("📄 /askdoc [question] - Ask from uploaded document")
     print("🔈 /voice on|off|male|female - Voice mode/profile")
+    print("🌐 /lang - Language mode")
+    print("⚙️ /settings - Voice/model/language/length")
+    print("🔎 Inline mode: @your_bot_username query")
     print("📊 /stats - View analytics")
     print("🧹 /reset - Clear memory")
     print("✅ /status - Bot health")

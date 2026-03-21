@@ -13,6 +13,8 @@ import time
 import base64
 import io
 import tempfile
+import re
+import unicodedata
 from urllib.parse import urlparse
 from flask import Flask
 from threading import Thread
@@ -567,13 +569,45 @@ def is_voice_reply_enabled(user_id):
 def set_voice_reply_enabled(user_id, enabled):
     memory.update_setting(str(user_id), VOICE_REPLY_MODE_KEY, bool(enabled))
 
+def send_voice_mode_panel(chat_id):
+    current = "ON" if is_voice_reply_enabled(chat_id) else "OFF"
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🔈 Voice ON", callback_data="voice_mode_on"),
+        InlineKeyboardButton("🔇 Voice OFF", callback_data="voice_mode_off"),
+    )
+    safe_send_message(
+        chat_id,
+        "🔈 *Voice Reply Options*\n"
+        f"Current mode: *{current}*\n\n"
+        "Choose your preferred mode:",
+        reply_markup=markup
+    )
+
 def _synthesize_audio_file(text):
     """Create a temporary MP3 file from text. Returns file path or None."""
     if not gTTS:
         return None
     cleaned = (text or "").strip()
+    cleaned = cleaned.replace("```", " ")
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"\*+", "", cleaned)
+    cleaned = re.sub(r"_+", "", cleaned)
+    cleaned = re.sub(r"~+", "", cleaned)
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned)  # markdown links
+    cleaned = re.sub(r"https?://\S+", "", cleaned)  # urls
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # Remove emojis/symbol noise for clearer speech output.
+    cleaned = "".join(
+        ch for ch in cleaned
+        if not unicodedata.category(ch).startswith("So")
+    )
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    cleaned = cleaned.strip()
+
     if not cleaned:
-        return None
+        cleaned = "Here is your response."
     if len(cleaned) > MAX_TTS_TEXT_CHARS:
         cleaned = cleaned[:MAX_TTS_TEXT_CHARS] + "..."
     try:
@@ -1836,20 +1870,12 @@ def handle_voice_mode(message):
             return
         parts = message.text.split(maxsplit=1) if message.text else []
         if len(parts) < 2:
-            current = "ON" if is_voice_reply_enabled(message.chat.id) else "OFF"
-            safe_send_message(
-                message.chat.id,
-                "🔈 *Voice Reply Mode*\n"
-                f"Current: *{current}*\n\n"
-                "Use:\n"
-                "`/voice on` - enable voice replies\n"
-                "`/voice off` - disable voice replies"
-            )
+            send_voice_mode_panel(message.chat.id)
             return
 
         mode = parts[1].strip().lower()
         if mode not in {"on", "off"}:
-            safe_send_message(message.chat.id, "Use `/voice on` or `/voice off`.")
+            safe_send_message(message.chat.id, "Use `/voice on`, `/voice off`, or `/voice` for options.")
             return
 
         enabled = mode == "on"
@@ -2707,13 +2733,7 @@ def handle_all_messages(message):
             )
             return
         if text == MENU_VOICE:
-            current = is_voice_reply_enabled(message.chat.id)
-            set_voice_reply_enabled(message.chat.id, not current)
-            safe_send_message(
-                message.chat.id,
-                "✅ Voice replies enabled." if not current else "✅ Voice replies disabled.",
-                reply_markup=build_main_reply_menu()
-            )
+            send_voice_mode_panel(message.chat.id)
             return
         if text == MENU_HELP:
             set_pending_mode(message.chat.id, None)
@@ -3006,6 +3026,30 @@ def handle_callback(call):
                 "Step 1: Use `/search [query]`\n"
                 "Step 2: I fetch concise results\n\n"
                 "Example: `/search best laptop for python 2026`"
+            )
+
+        elif call.data == "voice_mode_on":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_reply_enabled(call.message.chat.id, True)
+            bot.answer_callback_query(call.id, "Voice mode ON")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice replies enabled.",
+                reply_markup=build_main_reply_menu()
+            )
+
+        elif call.data == "voice_mode_off":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            set_voice_reply_enabled(call.message.chat.id, False)
+            bot.answer_callback_query(call.id, "Voice mode OFF")
+            safe_send_message(
+                call.message.chat.id,
+                "✅ Voice replies disabled.",
+                reply_markup=build_main_reply_menu()
             )
         
     except Exception as e:

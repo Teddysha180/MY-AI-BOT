@@ -805,6 +805,17 @@ def build_followup_markup():
     )
     return markup
 
+def maybe_followup_markup(text):
+    """Show follow-up buttons only for longer/denser answers."""
+    body = (text or "").strip()
+    if not body:
+        return None
+    if len(body) >= 520:
+        return build_followup_markup()
+    if body.count("\n") >= 8:
+        return build_followup_markup()
+    return None
+
 LAST_AI_REPLY_KEY = "last_ai_reply"
 
 def save_last_ai_reply(user_id, text):
@@ -1933,7 +1944,7 @@ def handle_search(message):
             # Send result
             result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
             save_last_ai_reply(message.chat.id, result_text)
-            send_ai_reply(message.chat.id, result_text, reply_markup=build_followup_markup())
+            send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
 
         except Exception as api_error:
             logger.error(f"Search API error: {api_error}")
@@ -2038,7 +2049,7 @@ OUTPUT FORMAT RULES:
 
             result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
             save_last_ai_reply(message.chat.id, result_text)
-            send_ai_reply(message.chat.id, result_text, reply_markup=build_followup_markup())
+            send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
 
         except Exception as api_error:
             logger.error(f"Code API error: {api_error}")
@@ -2234,7 +2245,8 @@ def handle_summarize(message):
             safe_send_message(message.chat.id, "⚠️ Could not summarize right now.")
             return
         save_last_ai_reply(message.chat.id, summary)
-        send_ai_reply(message.chat.id, f"📝 *Summary:*\n\n{summary}", reply_markup=build_followup_markup())
+        summary_text = f"📝 *Summary:*\n\n{summary}"
+        send_ai_reply(message.chat.id, summary_text, reply_markup=maybe_followup_markup(summary_text))
     except Exception as e:
         logger.error(f"Summarize command error: {e}")
         safe_send_message(message.chat.id, "❌ Summarize failed. Try again.")
@@ -2393,7 +2405,7 @@ def handle_askdoc(message):
         answer = clean_markdown(response.choices[0].message.content)
         final_text = f"📄 *Doc Answer ({doc_name}):*\n\n{answer}"
         save_last_ai_reply(message.chat.id, final_text)
-        send_ai_reply(message.chat.id, final_text, reply_markup=build_followup_markup())
+        send_ai_reply(message.chat.id, final_text, reply_markup=maybe_followup_markup(final_text))
         analytics.log_request(message.chat.id, len(query.split()), "doc_qa")
     except Exception as e:
         logger.error(f"AskDoc command error: {e}")
@@ -3275,7 +3287,7 @@ def handle_all_messages(message):
             
             # Send reply (text or voice depending on user mode)
             save_last_ai_reply(message.chat.id, reply)
-            send_ai_reply(message.chat.id, reply, reply_markup=build_followup_markup())
+            send_ai_reply(message.chat.id, reply, reply_markup=maybe_followup_markup(reply))
             logger.info(f"Chat reply sent using model: {used_model}")
             
             # Log analytics
@@ -3451,7 +3463,7 @@ def handle_callback(call):
                 safe_send_message(call.message.chat.id, f"⚠️ {err}")
                 return
             save_last_ai_reply(call.message.chat.id, answer)
-            send_ai_reply(call.message.chat.id, answer, reply_markup=build_followup_markup())
+            send_ai_reply(call.message.chat.id, answer, reply_markup=maybe_followup_markup(answer))
 
         elif call.data == "admin_users":
             if not require_admin(call):

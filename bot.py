@@ -638,18 +638,42 @@ def _synthesize_audio_file(text, user_id=None):
         cleaned = cleaned[:MAX_TTS_TEXT_CHARS] + "..."
 
     profile = get_voice_profile(user_id if user_id is not None else 0)
-    edge_voice = "en-US-GuyNeural" if profile == "male" else "en-US-JennyNeural"
+    male_edge_voices = [
+        "en-US-GuyNeural",
+        "en-US-ChristopherNeural",
+        "en-GB-RyanNeural",
+        "en-AU-WilliamNeural",
+    ]
+    female_edge_voices = [
+        "en-US-JennyNeural",
+        "en-US-AriaNeural",
+        "en-GB-SoniaNeural",
+        "en-AU-NatashaNeural",
+    ]
+    edge_voice_candidates = male_edge_voices if profile == "male" else female_edge_voices
 
     # Prefer Edge TTS for voice profile selection.
     if edge_tts is not None:
-        try:
-            fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
-            os.close(fd)
-            communicate = edge_tts.Communicate(text=cleaned, voice=edge_voice)
-            asyncio.run(communicate.save(path))
-            return path
-        except Exception as e:
-            logger.error(f"Edge TTS synthesis error: {e}")
+        last_err = None
+        for edge_voice in edge_voice_candidates:
+            path = None
+            try:
+                fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
+                os.close(fd)
+                communicate = edge_tts.Communicate(text=cleaned, voice=edge_voice)
+                asyncio.run(communicate.save(path))
+                logger.info(f"Edge TTS voice selected: {edge_voice}")
+                return path
+            except Exception as e:
+                last_err = e
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+                logger.warning(f"Edge TTS voice failed ({edge_voice}): {e}")
+        if last_err:
+            logger.error(f"Edge TTS synthesis failed for all candidate voices: {last_err}")
 
     # Do not fake male voice with generic fallback; this causes "female-like" output.
     if profile == "male":

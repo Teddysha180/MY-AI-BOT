@@ -1683,7 +1683,7 @@ def start_command(message):
 # ============================================================================
 # 🎨 DRAW COMMAND (IMPROVED)
 # ============================================================================
-@bot.message_handler(commands=['draw', 'imagine', 'generate'])
+@bot.message_handler(commands=['draw_legacy'])
 def handle_draw(message):
     thinking_msg = None
     try:
@@ -3066,7 +3066,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, None)
             if pending_mode == "draw":
                 message.text = f"/draw {text}"
-                handle_draw(message)
+                process_image_generation(message)
                 return
             if pending_mode == "search":
                 message.text = f"/search {text}"

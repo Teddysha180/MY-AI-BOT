@@ -588,11 +588,19 @@ MAX_DOC_PROMPT_CHARS = 14000
 MAX_TTS_TEXT_CHARS = 1400
 
 LANGUAGE_LABELS = {
-    "auto": "Auto",
-    "en": "English",
-    "am": "Amharic",
-    "ar": "Arabic",
-    "fr": "French",
+    "auto": "🌍 Auto",
+    "en": "🇺🇸 English",
+    "am": "🇪🇹 Amharic",
+    "ar": "🇸🇦 Arabic",
+    "fr": "🇫🇷 French",
+    "es": "🇪🇸 Spanish",
+    "de": "🇩🇪 German",
+    "it": "🇮🇹 Italian",
+    "pt": "🇵🇹 Portuguese",
+    "ru": "🇷🇺 Russian",
+    "tr": "🇹🇷 Turkish",
+    "hi": "🇮🇳 Hindi",
+    "sw": "🇰🇪 Swahili",
 }
 
 def is_voice_reply_enabled(user_id):
@@ -640,6 +648,14 @@ def build_language_instruction(user_id):
         "am": "Amharic",
         "ar": "Arabic",
         "fr": "French",
+        "es": "Spanish",
+        "de": "German",
+        "it": "Italian",
+        "pt": "Portuguese",
+        "ru": "Russian",
+        "tr": "Turkish",
+        "hi": "Hindi",
+        "sw": "Swahili",
     }
     return f"Always reply in {mapping.get(lang, 'English')} unless explicitly asked otherwise."
 
@@ -647,15 +663,23 @@ def send_language_panel(chat_id):
     current = get_user_language(chat_id)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton(("✅ " if current == "auto" else "") + "Auto", callback_data="lang_set_auto"),
-        InlineKeyboardButton(("✅ " if current == "en" else "") + "English", callback_data="lang_set_en"),
-        InlineKeyboardButton(("✅ " if current == "am" else "") + "Amharic", callback_data="lang_set_am"),
-        InlineKeyboardButton(("✅ " if current == "ar" else "") + "Arabic", callback_data="lang_set_ar"),
-        InlineKeyboardButton(("✅ " if current == "fr" else "") + "French", callback_data="lang_set_fr"),
+        InlineKeyboardButton(("✅ " if current == "auto" else "") + LANGUAGE_LABELS["auto"], callback_data="lang_set_auto"),
+        InlineKeyboardButton(("✅ " if current == "en" else "") + LANGUAGE_LABELS["en"], callback_data="lang_set_en"),
+        InlineKeyboardButton(("✅ " if current == "am" else "") + LANGUAGE_LABELS["am"], callback_data="lang_set_am"),
+        InlineKeyboardButton(("✅ " if current == "ar" else "") + LANGUAGE_LABELS["ar"], callback_data="lang_set_ar"),
+        InlineKeyboardButton(("✅ " if current == "fr" else "") + LANGUAGE_LABELS["fr"], callback_data="lang_set_fr"),
+        InlineKeyboardButton(("✅ " if current == "es" else "") + LANGUAGE_LABELS["es"], callback_data="lang_set_es"),
+        InlineKeyboardButton(("✅ " if current == "de" else "") + LANGUAGE_LABELS["de"], callback_data="lang_set_de"),
+        InlineKeyboardButton(("✅ " if current == "it" else "") + LANGUAGE_LABELS["it"], callback_data="lang_set_it"),
+        InlineKeyboardButton(("✅ " if current == "pt" else "") + LANGUAGE_LABELS["pt"], callback_data="lang_set_pt"),
+        InlineKeyboardButton(("✅ " if current == "ru" else "") + LANGUAGE_LABELS["ru"], callback_data="lang_set_ru"),
+        InlineKeyboardButton(("✅ " if current == "tr" else "") + LANGUAGE_LABELS["tr"], callback_data="lang_set_tr"),
+        InlineKeyboardButton(("✅ " if current == "hi" else "") + LANGUAGE_LABELS["hi"], callback_data="lang_set_hi"),
+        InlineKeyboardButton(("✅ " if current == "sw" else "") + LANGUAGE_LABELS["sw"], callback_data="lang_set_sw"),
     )
     safe_send_message(
         chat_id,
-        "🌐 *Language Mode*\nChoose response language:",
+        "🌐 *Language Mode*\nChoose your response language:",
         reply_markup=markup
     )
 
@@ -2104,10 +2128,26 @@ def handle_language_mode(message):
             "ar": "ar",
             "french": "fr",
             "fr": "fr",
+            "spanish": "es",
+            "es": "es",
+            "german": "de",
+            "de": "de",
+            "italian": "it",
+            "it": "it",
+            "portuguese": "pt",
+            "pt": "pt",
+            "russian": "ru",
+            "ru": "ru",
+            "turkish": "tr",
+            "tr": "tr",
+            "hindi": "hi",
+            "hi": "hi",
+            "swahili": "sw",
+            "sw": "sw",
         }
         lang = aliases.get(choice)
         if not lang:
-            safe_send_message(message.chat.id, "Use `/lang` then choose, or `/lang en|am|ar|fr|auto`.")
+            safe_send_message(message.chat.id, "Use `/lang` panel, or `/lang <code>` like `en, am, ar, fr, es, de, it, pt, ru, tr, hi, sw, auto`.")
             return
         set_user_language(message.chat.id, lang)
         safe_send_message(message.chat.id, f"✅ Language set to *{LANGUAGE_LABELS.get(lang, 'Auto')}*.")

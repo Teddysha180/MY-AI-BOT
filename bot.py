@@ -639,6 +639,24 @@ def set_user_language(user_id, lang):
         l = "auto"
     memory.update_setting(str(user_id), LANG_MODE_KEY, l)
 
+def get_language_name(lang_code):
+    names = {
+        "auto": "English",
+        "en": "English",
+        "am": "Amharic",
+        "ar": "Arabic",
+        "fr": "French",
+        "es": "Spanish",
+        "de": "German",
+        "it": "Italian",
+        "pt": "Portuguese",
+        "ru": "Russian",
+        "tr": "Turkish",
+        "hi": "Hindi",
+        "sw": "Swahili",
+    }
+    return names.get(str(lang_code).lower(), "English")
+
 def build_language_instruction(user_id):
     lang = get_user_language(user_id)
     if lang == "auto":
@@ -777,6 +795,58 @@ def send_voice_mode_panel(chat_id):
         reply_markup=markup
     )
 
+def build_followup_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➡️ Continue", callback_data="fu_continue"),
+        InlineKeyboardButton("✂️ Shorten", callback_data="fu_shorten"),
+        InlineKeyboardButton("🧪 Examples", callback_data="fu_examples"),
+        InlineKeyboardButton("🌐 Translate", callback_data="fu_translate"),
+    )
+    return markup
+
+LAST_AI_REPLY_KEY = "last_ai_reply"
+
+def save_last_ai_reply(user_id, text):
+    memory.update_setting(str(user_id), LAST_AI_REPLY_KEY, (text or "")[:12000])
+
+def get_last_ai_reply(user_id):
+    return str(memory.get_setting(str(user_id), LAST_AI_REPLY_KEY, "") or "").strip()
+
+def ask_ai_text(user_id, prompt, temperature=0.5):
+    if not groq_client:
+        return None
+    part, _, _ = groq_chat_with_fallback(
+        messages=[
+            {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLANGUAGE MODE:\n{build_language_instruction(user_id)}"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=temperature,
+        max_tokens=get_response_max_tokens(user_id),
+    )
+    return clean_markdown(part or "")
+
+def run_followup_action(user_id, action):
+    last_text = get_last_ai_reply(user_id)
+    if not last_text:
+        return None, "No recent answer found. Ask something first."
+
+    language_name = get_language_name(get_user_language(user_id))
+    prompts = {
+        "continue": "Continue this answer from where it ended. Do not repeat prior text.\n\n" + last_text,
+        "shorten": "Rewrite this into a shorter, cleaner version with key points only:\n\n" + last_text,
+        "examples": "Add practical examples to this answer. Keep it clear and useful:\n\n" + last_text,
+        "translate": f"Translate the following answer into {language_name} and keep meaning accurate:\n\n" + last_text,
+    }
+    prompt = prompts.get(action)
+    if not prompt:
+        return None, "Unknown follow-up action."
+
+    answer = ask_ai_text(user_id, prompt, temperature=0.4)
+    if not answer:
+        return None, "AI backend unavailable right now."
+    return answer, None
+
 def _synthesize_audio_file(text, user_id=None):
     """Create a temporary MP3 file from text. Returns file path or None."""
     cleaned = (text or "").strip()
@@ -862,10 +932,10 @@ def _synthesize_audio_file(text, user_id=None):
         logger.error(f"TTS synthesis error: {e}")
         return None
 
-def send_ai_reply(chat_id, text):
+def send_ai_reply(chat_id, text, reply_markup=None):
     """Send AI reply as text or audio depending on user setting."""
     if not is_voice_reply_enabled(chat_id):
-        return safe_send_message(chat_id, text)
+        return safe_send_message(chat_id, text, reply_markup=reply_markup)
 
     audio_path = _synthesize_audio_file(text, user_id=chat_id)
     if not audio_path:
@@ -873,7 +943,7 @@ def send_ai_reply(chat_id, text):
             chat_id,
             "🔈 Voice reply unavailable right now. Sending text instead."
         )
-        return safe_send_message(chat_id, text)
+        return safe_send_message(chat_id, text, reply_markup=reply_markup)
 
     try:
         with open(audio_path, "rb") as f:
@@ -884,10 +954,10 @@ def send_ai_reply(chat_id, text):
                 caption="🔈 Voice reply"
             )
         # Keep text too for copy/paste usability.
-        return safe_send_message(chat_id, text)
+        return safe_send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Send audio reply error: {e}")
-        return safe_send_message(chat_id, text)
+        return safe_send_message(chat_id, text, reply_markup=reply_markup)
     finally:
         try:
             os.remove(audio_path)
@@ -1650,6 +1720,8 @@ Tap a mode below, then send your prompt.
 `/search [query]`
 `/code [question]`
 `/askdoc [question]`
+`/summarize [text]`
+`/templates`
 `/voice`
 `/lang`
 
@@ -1860,7 +1932,8 @@ def handle_search(message):
 
             # Send result
             result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
-            safe_send_message(message.chat.id, result_text)
+            save_last_ai_reply(message.chat.id, result_text)
+            send_ai_reply(message.chat.id, result_text, reply_markup=build_followup_markup())
 
         except Exception as api_error:
             logger.error(f"Search API error: {api_error}")
@@ -1964,7 +2037,8 @@ OUTPUT FORMAT RULES:
             analysis = clean_markdown(analysis)
 
             result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
-            safe_send_message(message.chat.id, result_text)
+            save_last_ai_reply(message.chat.id, result_text)
+            send_ai_reply(message.chat.id, result_text, reply_markup=build_followup_markup())
 
         except Exception as api_error:
             logger.error(f"Code API error: {api_error}")
@@ -2096,6 +2170,8 @@ def handle_help(message):
 `/search [query]` - Search
 `/code [question]` - Code help
 `/askdoc [question]` - Ask from doc
+`/summarize [text]` - Short summary
+`/templates` - Prompt ideas
 `/voice` - Voice options
 `/lang` - Language mode
 `/settings` - Open settings
@@ -2106,6 +2182,62 @@ def handle_help(message):
     except Exception as e:
         logger.error(f"Help error: {e}")
         safe_send_message(message.chat.id, "Type /start to begin!")
+
+@bot.message_handler(commands=['templates'])
+def handle_templates(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        text = (
+            "🧩 *Prompt Templates*\n\n"
+            "`/draw cinematic portrait of a lion in red neon, ultra detailed`\n"
+            "`/search best plan to learn Python in 30 days`\n"
+            "`/code build a Telegram bot command parser with examples`\n"
+            "`/summarize Explain quantum computing for beginners in simple words`\n\n"
+            "Tip: reply to any long message with `/summarize`."
+        )
+        safe_send_message(message.chat.id, text)
+    except Exception as e:
+        logger.error(f"Templates command error: {e}")
+        safe_send_message(message.chat.id, "❌ Failed to open templates.")
+
+@bot.message_handler(commands=['summarize'])
+def handle_summarize(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        target_text = ""
+        if message.text and len(message.text.split()) > 1:
+            target_text = message.text.split(maxsplit=1)[1].strip()
+        elif getattr(message, "reply_to_message", None):
+            reply_msg = message.reply_to_message
+            target_text = (getattr(reply_msg, "text", None) or getattr(reply_msg, "caption", None) or "").strip()
+
+        if not target_text:
+            safe_send_message(
+                message.chat.id,
+                "Use `/summarize your text` or reply to a message with `/summarize`."
+            )
+            return
+        if not groq_client:
+            safe_send_message(message.chat.id, "🔌 AI backend unavailable.")
+            return
+
+        bot.send_chat_action(message.chat.id, 'typing')
+        prompt = (
+            "Summarize this content into concise bullet points. "
+            "Keep key facts and actions. If technical, include short code-oriented tips.\n\n"
+            f"{target_text}"
+        )
+        summary = ask_ai_text(message.chat.id, prompt, temperature=0.3)
+        if not summary:
+            safe_send_message(message.chat.id, "⚠️ Could not summarize right now.")
+            return
+        save_last_ai_reply(message.chat.id, summary)
+        send_ai_reply(message.chat.id, f"📝 *Summary:*\n\n{summary}", reply_markup=build_followup_markup())
+    except Exception as e:
+        logger.error(f"Summarize command error: {e}")
+        safe_send_message(message.chat.id, "❌ Summarize failed. Try again.")
 
 @bot.message_handler(commands=['lang', 'language'])
 def handle_language_mode(message):
@@ -2259,7 +2391,9 @@ def handle_askdoc(message):
             max_tokens=700
         )
         answer = clean_markdown(response.choices[0].message.content)
-        send_ai_reply(message.chat.id, f"📄 *Doc Answer ({doc_name}):*\n\n{answer}")
+        final_text = f"📄 *Doc Answer ({doc_name}):*\n\n{answer}"
+        save_last_ai_reply(message.chat.id, final_text)
+        send_ai_reply(message.chat.id, final_text, reply_markup=build_followup_markup())
         analytics.log_request(message.chat.id, len(query.split()), "doc_qa")
     except Exception as e:
         logger.error(f"AskDoc command error: {e}")
@@ -3140,7 +3274,8 @@ def handle_all_messages(message):
             memory.save_user_data(user_id, user_data)
             
             # Send reply (text or voice depending on user mode)
-            send_ai_reply(message.chat.id, reply)
+            save_last_ai_reply(message.chat.id, reply)
+            send_ai_reply(message.chat.id, reply, reply_markup=build_followup_markup())
             logger.info(f"Chat reply sent using model: {used_model}")
             
             # Log analytics
@@ -3298,6 +3433,25 @@ def handle_callback(call):
             set_response_length(call.message.chat.id, length_value)
             bot.answer_callback_query(call.id, f"Length: {length_value}")
             send_response_length_panel(call.message.chat.id)
+
+        elif call.data in {"fu_continue", "fu_shorten", "fu_examples", "fu_translate"}:
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            action_map = {
+                "fu_continue": "continue",
+                "fu_shorten": "shorten",
+                "fu_examples": "examples",
+                "fu_translate": "translate",
+            }
+            action_name = action_map.get(call.data)
+            bot.answer_callback_query(call.id, "Processing...")
+            answer, err = run_followup_action(call.message.chat.id, action_name)
+            if err:
+                safe_send_message(call.message.chat.id, f"⚠️ {err}")
+                return
+            save_last_ai_reply(call.message.chat.id, answer)
+            send_ai_reply(call.message.chat.id, answer, reply_markup=build_followup_markup())
 
         elif call.data == "admin_users":
             if not require_admin(call):

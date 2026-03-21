@@ -651,7 +651,11 @@ def _synthesize_audio_file(text, user_id=None):
         except Exception as e:
             logger.error(f"Edge TTS synthesis error: {e}")
 
-    # Fallback to gTTS if Edge TTS is unavailable.
+    # Do not fake male voice with generic fallback; this causes "female-like" output.
+    if profile == "male":
+        return None
+
+    # Fallback to gTTS only for non-male profile.
     if not gTTS:
         return None
     try:
@@ -669,12 +673,20 @@ def send_ai_reply(chat_id, text):
     if not is_voice_reply_enabled(chat_id):
         return safe_send_message(chat_id, text)
 
+    selected_profile = get_voice_profile(chat_id)
     audio_path = _synthesize_audio_file(text, user_id=chat_id)
     if not audio_path:
-        safe_send_message(
-            chat_id,
-            "🔈 Voice reply unavailable right now. Sending text instead."
-        )
+        if selected_profile == "male":
+            safe_send_message(
+                chat_id,
+                "👨 Male voice is unavailable on this server right now.\n"
+                "Try again later, or switch to `/voice female`."
+            )
+        else:
+            safe_send_message(
+                chat_id,
+                "🔈 Voice reply unavailable right now. Sending text instead."
+            )
         return safe_send_message(chat_id, text)
 
     try:
@@ -1920,6 +1932,7 @@ def handle_voice_mode(message):
         mode = parts[1].strip().lower()
         if mode in {"male", "female"}:
             set_voice_profile(message.chat.id, mode)
+            set_voice_reply_enabled(message.chat.id, True)
             safe_send_message(message.chat.id, f"✅ Voice profile set to *{mode.upper()}*.")
             return
 
@@ -3106,10 +3119,11 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
             set_voice_profile(call.message.chat.id, "male")
+            set_voice_reply_enabled(call.message.chat.id, True)
             bot.answer_callback_query(call.id, "Male voice selected")
             safe_send_message(
                 call.message.chat.id,
-                "✅ Voice profile set to *MALE*.",
+                "✅ Voice profile set to *MALE* (voice mode ON).",
                 reply_markup=build_main_reply_menu()
             )
 
@@ -3118,10 +3132,11 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
             set_voice_profile(call.message.chat.id, "female")
+            set_voice_reply_enabled(call.message.chat.id, True)
             bot.answer_callback_query(call.id, "Female voice selected")
             safe_send_message(
                 call.message.chat.id,
-                "✅ Voice profile set to *FEMALE*.",
+                "✅ Voice profile set to *FEMALE* (voice mode ON).",
                 reply_markup=build_main_reply_menu()
             )
         

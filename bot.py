@@ -806,14 +806,7 @@ def build_followup_markup():
     return markup
 
 def maybe_followup_markup(text):
-    """Show follow-up buttons only for longer/denser answers."""
-    body = (text or "").strip()
-    if not body:
-        return None
-    if len(body) >= 520:
-        return build_followup_markup()
-    if body.count("\n") >= 8:
-        return build_followup_markup()
+    """Follow-up buttons are fully disabled."""
     return None
 
 LAST_AI_REPLY_KEY = "last_ai_reply"

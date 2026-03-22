@@ -9,3 +9,4 @@ gunicorn
 gTTS==2.5.4
 pypdf==4.3.1
 edge-tts==6.1.17
+gTTS==2.5.4

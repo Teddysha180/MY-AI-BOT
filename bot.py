@@ -173,6 +173,10 @@ if not bot:
             print("[DummyBot] send_audio called; BOT_TOKEN not configured.")
             return None
 
+        def send_document(self, *args, **kwargs):
+            print("[DummyBot] send_document called; BOT_TOKEN not configured.")
+            return None
+
         def delete_message(self, *args, **kwargs):
             return None
 
@@ -900,6 +904,8 @@ def _synthesize_audio_file(text, user_id=None):
     edge_voice_candidates = male_edge_voices if profile == "male" else female_edge_voices
     edge_rate = {"soft": "-18%", "normal": "+0%", "fast": "+18%"}.get(style, "+0%")
 
+    errors = []
+
     # Prefer Edge TTS for voice profile selection.
     if edge_tts is not None:
         last_err = None
@@ -921,10 +927,13 @@ def _synthesize_audio_file(text, user_id=None):
                     pass
                 logger.warning(f"Edge TTS voice failed ({edge_voice}): {e}")
         if last_err:
+            errors.append(f"edge_tts: {last_err}")
             logger.error(f"Edge TTS synthesis failed for all candidate voices: {last_err}")
 
     # Free fallback to gTTS for all profiles when Edge TTS is unavailable.
     if not gTTS:
+        if errors:
+            logger.error(f"TTS failed and gTTS not installed. Errors: {' | '.join(errors)}")
         return None
     try:
         fd, path = tempfile.mkstemp(prefix="artovix_tts_", suffix=".mp3")
@@ -933,6 +942,8 @@ def _synthesize_audio_file(text, user_id=None):
         tts.save(path)
         return path
     except Exception as e:
+        errors.append(f"gtts: {e}")
+        logger.error(f"All TTS engines failed: {' | '.join(errors)}")
         logger.error(f"TTS synthesis error: {e}")
         return None
 
@@ -961,7 +972,14 @@ def send_ai_reply(chat_id, text, reply_markup=None):
         return safe_send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Send audio reply error: {e}")
-        return safe_send_message(chat_id, text, reply_markup=reply_markup)
+        try:
+            with open(audio_path, "rb") as f:
+                bot.send_document(chat_id, f, caption="🔈 Voice reply (file)")
+            return safe_send_message(chat_id, text, reply_markup=reply_markup)
+        except Exception as e2:
+            logger.error(f"Send audio as document fallback failed: {e2}")
+            safe_send_message(chat_id, "⚠️ Audio delivery failed. Sending text only.")
+            return safe_send_message(chat_id, text, reply_markup=reply_markup)
     finally:
         try:
             os.remove(audio_path)

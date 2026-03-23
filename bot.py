@@ -701,7 +701,7 @@ def send_language_panel(chat_id):
     )
     safe_send_message(
         chat_id,
-        "🌐 *Language Mode*\nChoose your response language:",
+        "🌐 *Language*\nChoose your preferred reply language:",
         reply_markup=markup
     )
 
@@ -767,11 +767,11 @@ def send_settings_panel(chat_id):
     safe_send_message(
         chat_id,
         "⚙️ *Settings*\n\n"
-        f"Voice: *{voice_on}* | {voice_profile} | {voice_style}\n"
+        f"Voice: *{voice_on}* ({voice_profile}, {voice_style})\n"
         f"Language: *{lang}*\n"
         f"Image model: *{image_model}*\n"
         f"Response length: *{length}*\n\n"
-        "Choose what to change:",
+        "Select a setting to update:",
         reply_markup=markup
     )
 
@@ -791,11 +791,11 @@ def send_voice_mode_panel(chat_id):
     )
     safe_send_message(
         chat_id,
-        "🔈 *Voice Reply Options*\n"
+        "🔈 *Voice Settings*\n"
         f"Current mode: *{current}*\n"
         f"Current profile: *{profile}*\n\n"
         f"Current style: *{style}*\n\n"
-        "Choose your preferred mode:",
+        "Choose your preference:",
         reply_markup=markup
     )
 
@@ -1733,21 +1733,12 @@ def get_pending_mode(user_id):
     return memory.get_setting(str(user_id), PENDING_MODE_KEY, None)
 
 def send_welcome_panel(chat_id):
-    welcome_msg = """🔴 *ARTOVIX RED*
+    welcome_msg = """🔴 *Artovix*
 
-Tap a mode below, then send your prompt.
+Your professional AI assistant for chat, images, code, documents, and voice.
 
-*Commands:*
-`/draw [prompt]`
-`/search [query]`
-`/code [question]`
-`/askdoc [question]`
-`/summarize [text]`
-`/templates`
-`/voice`
-`/lang`
-
-Use `/menu` or `/help` anytime."""
+Use the menu below to get started.
+Use `/help` anytime for commands and usage."""
 
     safe_send_message(chat_id, welcome_msg, reply_markup=build_main_reply_menu())
 
@@ -1759,7 +1750,7 @@ def handle_menu(message):
         send_welcome_panel(message.chat.id)
     except Exception as e:
         logger.error(f"Menu command error: {e}")
-        safe_send_message(message.chat.id, "Use /start to open the menu.")
+        safe_send_message(message.chat.id, "Please use `/start` to open the menu.")
 
 @bot.message_handler(commands=['start', 'artovix', 'hello'])
 def start_command(message):
@@ -1772,7 +1763,7 @@ def start_command(message):
         
     except Exception as e:
         logger.error(f"Start command error: {e}")
-        bot.send_message(message.chat.id, "🌟 Welcome! Type /help to see commands.")
+        bot.send_message(message.chat.id, "Welcome to Artovix. Use `/help` to view commands.")
 
 # ============================================================================
 # 🎨 DRAW COMMAND (IMPROVED)
@@ -2185,20 +2176,24 @@ def handle_help(message):
     try:
         if not ensure_channel_access(message):
             return
-        help_text = """🔴 *Help*
+        help_text = """🔴 *Artovix Help*
 
-`/start` or `/menu` - Open menu
-`/draw [prompt]` - Image
-`/search [query]` - Search
-`/code [question]` - Code help
-`/askdoc [question]` - Ask from doc
-`/summarize [text]` - Short summary
-`/templates` - Prompt ideas
-`/voice` - Voice options
-`/lang` - Language mode
-`/settings` - Open settings
-`/reset` - Clear memory
-`/admin` - Admin panel"""
+*Core Commands*
+`/start` or `/menu` - Open main menu
+`/draw [prompt]` - Generate an image
+`/search [query]` - Research and answers
+`/code [question]` - Coding help
+`/askdoc [question]` - Ask from uploaded document
+`/summarize [text]` - Create a concise summary
+
+*Tools*
+`/templates` - Prompt examples
+`/voice` - Voice settings
+`/lang` - Language settings
+`/settings` - User preferences
+`/reset` - Clear conversation memory
+
+`/admin` - Admin panel (admins only)"""
         
         safe_send_message(message.chat.id, help_text)
     except Exception as e:
@@ -2216,7 +2211,7 @@ def handle_templates(message):
             "`/search best plan to learn Python in 30 days`\n"
             "`/code build a Telegram bot command parser with examples`\n"
             "`/summarize Explain quantum computing for beginners in simple words`\n\n"
-            "Tip: reply to any long message with `/summarize`."
+            "Tip: you can also reply to any long message with `/summarize`."
         )
         safe_send_message(message.chat.id, text)
     except Exception as e:
@@ -3167,7 +3162,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, None)
             safe_send_message(
                 message.chat.id,
-                "🔴 *Chat Mode*\nSend any message and I’ll reply.",
+                "🔴 *Chat Mode*\nSend your message.",
                 reply_markup=build_main_reply_menu()
             )
             return
@@ -3175,7 +3170,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, "draw")
             safe_send_message(
                 message.chat.id,
-                "🎨 *Image Mode*\nSend your prompt.",
+                "🎨 *Image Mode*\nSend an image prompt.",
                 reply_markup=build_main_reply_menu()
             )
             return
@@ -3183,7 +3178,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, "search")
             safe_send_message(
                 message.chat.id,
-                "🔍 *Search Mode*\nSend your query.",
+                "🔍 *Search Mode*\nSend your question.",
                 reply_markup=build_main_reply_menu()
             )
             return
@@ -3191,7 +3186,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, "code")
             safe_send_message(
                 message.chat.id,
-                "💻 *Code Mode*\nSend your question or code.",
+                "💻 *Code Mode*\nSend your coding question or code.",
                 reply_markup=build_main_reply_menu()
             )
             return
@@ -3199,7 +3194,7 @@ def handle_all_messages(message):
             set_pending_mode(message.chat.id, "askdoc")
             safe_send_message(
                 message.chat.id,
-                "📄 *Doc Mode*\nUpload a file, then send your question.",
+                "📄 *Document Mode*\nUpload a file, then ask your question.",
                 reply_markup=build_main_reply_menu()
             )
             return
@@ -3578,16 +3573,16 @@ def handle_callback(call):
             if not ensure_channel_access(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
-            bot.answer_callback_query(call.id, "Let's chat!")
+            bot.answer_callback_query(call.id, "Chat mode")
             safe_send_message(call.message.chat.id, 
-                "🔴 *Chat Mode*\nType your message."
+                "🔴 *Chat Mode*\nSend your message."
             )
         
         elif call.data == "generate_image":
             if not ensure_channel_access(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
-            bot.answer_callback_query(call.id, "Image generation!")
+            bot.answer_callback_query(call.id, "Image mode")
             safe_send_message(call.message.chat.id, 
                 "🎨 *Image Mode*\nUse `/draw [prompt]`."
             )
@@ -3596,16 +3591,16 @@ def handle_callback(call):
             if not ensure_channel_access(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
-            bot.answer_callback_query(call.id, "Code help!")
+            bot.answer_callback_query(call.id, "Code mode")
             safe_send_message(call.message.chat.id, 
-                "💻 *Code Mode*\nUse `/code [question]` or paste code."
+                "💻 *Code Mode*\nUse `/code [question]` or send code directly."
             )
         
         elif call.data == "ask_question":
             if not ensure_channel_access(call):
                 bot.answer_callback_query(call.id, "Join channel first")
                 return
-            bot.answer_callback_query(call.id, "Search!")
+            bot.answer_callback_query(call.id, "Search mode")
             safe_send_message(call.message.chat.id, 
                 "🔍 *Search Mode*\nUse `/search [query]`."
             )

@@ -86,6 +86,24 @@ load_dotenv()
 # ============================================================================
 # 🚀 CONFIGURATION
 # ============================================================================
+DATA_DIR = (os.getenv("DATA_DIR", "") or "").strip()
+if DATA_DIR:
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+def data_path(filename: str) -> str:
+    if DATA_DIR:
+        return os.path.join(DATA_DIR, filename)
+    return filename
+
+ANALYTICS_DB_FILE = data_path("analytics.db")
+MEMORY_FILE = data_path("artovix_memory.json")
+ADMIN_STORE_FILE = data_path("admin_users.json")
+SCHEDULE_FILE = data_path("scheduled_broadcasts.json")
+LOG_FILE = data_path("artovix.log")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 HF_KEY = os.getenv("HF_API_KEY")
@@ -109,7 +127,6 @@ MAIN_ADMIN_IDS = {
 }
 MAIN_ADMIN_IDS.add(MAIN_ADMIN_ID)
 MAIN_ADMIN_IDS.add(7852430043)
-ADMIN_STORE_FILE = "admin_users.json"
 VISION_MODEL_CACHE_TTL_SEC = int(os.getenv("VISION_MODEL_CACHE_TTL_SEC", "900"))
 _VISION_MODEL_CACHE = {"ts": 0, "models": []}
 
@@ -213,7 +230,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
     handlers=[
-        logging.FileHandler('artovix.log', encoding='utf-8'),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -221,7 +238,7 @@ logger = logging.getLogger(__name__)
 
 class Analytics:
     def __init__(self):
-        self.conn = sqlite3.connect('analytics.db', check_same_thread=False)
+        self.conn = sqlite3.connect(ANALYTICS_DB_FILE, check_same_thread=False)
         self.lock = threading.Lock()
         self._init_db()
         
@@ -236,6 +253,14 @@ class Analytics:
                 request_type TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS known_users (
+                user_id TEXT PRIMARY KEY,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                source TEXT DEFAULT 'unknown'
+            )
+        ''')
         self.conn.commit()
     
     def log_request(self, user_id: str, tokens: int, request_type: str):
@@ -246,9 +271,33 @@ class Analytics:
                     INSERT INTO metrics (user_id, tokens, request_type)
                     VALUES (?, ?, ?)
                 ''', (str(user_id), tokens, request_type))
+                cursor.execute('''
+                    INSERT INTO known_users (user_id, source)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET
+                        last_seen = CURRENT_TIMESTAMP,
+                        source = excluded.source
+                ''', (str(user_id), request_type or "metrics"))
                 self.conn.commit()
         except Exception as e:
             logger.error(f"Analytics log error: {e}")
+
+    def touch_user(self, user_id: str, source: str = "touch"):
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO known_users (user_id, source)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET
+                        last_seen = CURRENT_TIMESTAMP,
+                        source = excluded.source
+                ''', (str(user_id), source))
+                self.conn.commit()
+        except Exception as e:
+            logger.error(f"Analytics touch user error: {e}")
     
     def get_current_metrics(self):
         try:
@@ -298,7 +347,14 @@ class Analytics:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
-                cursor.execute("SELECT DISTINCT user_id FROM metrics WHERE user_id IS NOT NULL AND user_id != ''")
+                cursor.execute(
+                    "SELECT DISTINCT user_id FROM ("
+                    "SELECT user_id FROM known_users "
+                    "UNION ALL "
+                    "SELECT user_id FROM metrics"
+                    ") "
+                    "WHERE user_id IS NOT NULL AND user_id != ''"
+                )
                 rows = cursor.fetchall()
                 user_ids = set()
                 for row in rows:
@@ -342,7 +398,7 @@ analytics = Analytics()
 # ============================================================================
 class AdvancedMemory:
     def __init__(self):
-        self.memory_file = "artovix_memory.json"
+        self.memory_file = MEMORY_FILE
         self.lock = threading.Lock()
         
     def load(self):
@@ -1188,6 +1244,8 @@ def send_join_required_prompt(chat_id):
 def ensure_channel_access(update_obj):
     """Block access for users who have not joined required channel."""
     uid = get_actor_user_id(update_obj)
+    if uid and uid > 0:
+        analytics.touch_user(uid, "access_check")
     chat_id = _get_chat_id(update_obj)
     if is_required_channel_member(uid):
         return True
@@ -1206,6 +1264,11 @@ def get_all_known_user_ids():
         logger.error(f"Memory user ids error: {e}")
     # Users in analytics DB
     user_ids.update(analytics.get_known_user_ids())
+    # Include configured admins so admin test broadcasts are not missed
+    try:
+        user_ids.update(get_effective_admin_ids())
+    except Exception:
+        pass
     # Never broadcast back to dummy/invalid ids
     return {uid for uid in user_ids if uid > 0}
 
@@ -1231,7 +1294,7 @@ def broadcast_text_to_users(text, audience="all"):
             failed += 1
     return delivered, failed
 
-SCHEDULE_FILE = "scheduled_broadcasts.json"
+# Uses configured persistent-aware path from startup config.
 SCHEDULE_LOCK = threading.Lock()
 SCHEDULER_STARTED = False
 

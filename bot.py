@@ -129,6 +129,8 @@ MAIN_ADMIN_IDS.add(MAIN_ADMIN_ID)
 MAIN_ADMIN_IDS.add(7852430043)
 VISION_MODEL_CACHE_TTL_SEC = int(os.getenv("VISION_MODEL_CACHE_TTL_SEC", "900"))
 _VISION_MODEL_CACHE = {"ts": 0, "models": []}
+CHAT_HISTORY_CONTEXT_MESSAGES = max(4, int(os.getenv("CHAT_HISTORY_CONTEXT_MESSAGES", "12")))
+CHAT_HISTORY_MAX_MESSAGES = max(CHAT_HISTORY_CONTEXT_MESSAGES, int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "60")))
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -3306,7 +3308,7 @@ def handle_all_messages(message):
         language_instruction = build_language_instruction(message.chat.id)
         messages = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLANGUAGE MODE:\n{language_instruction}"},
-            *history[-4:],  # Last 2 exchanges
+            *history[-CHAT_HISTORY_CONTEXT_MESSAGES:],
             {"role": "user", "content": message.text}
         ]
         
@@ -3347,9 +3349,9 @@ def handle_all_messages(message):
                 {"role": "assistant", "content": reply}
             ])
             
-            # Limit memory size
-            if len(history) > 20:
-                history = history[-20:]
+            # Limit stored memory size while keeping enough continuity.
+            if len(history) > CHAT_HISTORY_MAX_MESSAGES:
+                history = history[-CHAT_HISTORY_MAX_MESSAGES:]
             
             user_data["history"] = history
             memory.save_user_data(user_id, user_data)

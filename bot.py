@@ -105,14 +105,25 @@ SCHEDULE_FILE = data_path("scheduled_broadcasts.json")
 LOG_FILE = data_path("artovix.log")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_KEY = os.getenv("GROQ_API_KEY")
+GROQ_KEY = os.getenv("GROQ_KEY") or os.getenv("GROQ_API_KEY")
 HF_KEY = os.getenv("HF_API_KEY")
-CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
-CHAT_MODEL_FALLBACK = os.getenv("GROQ_CHAT_MODEL_FALLBACK", "llama-3.1-8b-instant")
+
+def normalize_chat_model(model, default):
+    configured = (model or default).strip()
+    if configured.lower() in {"compound", "groq/compound", "compound-beta"}:
+        return "groq/compound-mini"
+    return configured
+
+CHAT_MODEL = normalize_chat_model(
+    os.getenv("GROQ_CHAT_MODEL"), "llama-3.3-70b-versatile"
+)
+CHAT_MODEL_FALLBACK = normalize_chat_model(
+    os.getenv("GROQ_CHAT_MODEL_FALLBACK"), "llama-3.1-8b-instant"
+)
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
 VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "https://t.me/arts_of_drawings")
-REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()
+REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "@arts_of_drawings").strip()
 ADMIN_USER_IDS = {
     int(x.strip()) for x in os.getenv("ADMIN_USER_IDS", "").split(",")
     if x.strip().isdigit()
@@ -2168,7 +2179,9 @@ OUTPUT FORMAT RULES:
 @bot.message_handler(commands=['stats', 'analytics', 'metrics'])
 def handle_stats(message):
     try:
-        if not require_admin(message):
+        if not ensure_channel_access(message):
+            return
+        if not require_main_admin(message):
             return
         metrics = analytics.get_current_metrics()
         breakdown = metrics.get('breakdown', {})
@@ -3388,20 +3401,34 @@ def handle_all_messages(message):
             logger.error(f"Chat API error: {api_error}\n{traceback.format_exc()}")
             try:
                 err = str(api_error).lower()
-                if "rate limit" in err or "429" in err:
+                status_code = getattr(api_error, "status_code", None)
+                if status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
                     user_msg = (
                         "⏳ *Too many requests right now.*\n\n"
                         "Please wait 10-20 seconds and try again."
                     )
-                elif "api key" in err or "unauthorized" in err or "authentication" in err:
+                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer")):
                     user_msg = (
                         "🔐 *AI key issue detected.*\n\n"
                         "Please check `GROQ_API_KEY` in your Render environment variables."
                     )
-                elif "model" in err and ("not found" in err or "decommissioned" in err or "not available" in err):
+                elif "model" in err and (
+                    status_code in {400, 404}
+                    or any(term in err for term in ("not found", "decommissioned", "not available", "unsupported"))
+                ):
                     user_msg = (
                         "🧠 *Model temporarily unavailable.*\n\n"
                         "I switched models automatically. Please try your message again."
+                    )
+                elif status_code == 413 or any(term in err for term in ("context length", "maximum context", "prompt is too long", "request too large")):
+                    user_msg = (
+                        "📝 *That conversation is too long for the AI model.*\n\n"
+                        "Please use /reset and send the message again."
+                    )
+                elif status_code in {408, 500, 502, 503, 504} or any(term in err for term in ("timeout", "timed out", "service unavailable", "connection reset")):
+                    user_msg = (
+                        "🔄 *AI service is temporarily unavailable.*\n\n"
+                        "Please try again in a moment."
                     )
                 else:
                     user_msg = (

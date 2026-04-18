@@ -20,10 +20,12 @@ Quick start:
 
 Required environment variables (in `.env`):
 - `BOT_TOKEN` — Telegram bot token
-- `GROQ_API_KEY` — Groq API key for LLM, voice and vision features (optional)
+- `GROQ_KEY` — Groq API key for LLM, voice and vision features (optional)
 - `HF_API_KEY` — Hugging Face API key (optional, used for image services)
 
-If `GROQ_API_KEY` or `BOT_TOKEN` are missing, the bot will run in a degraded mode and print helpful warnings.
+Compatibility note: `GROQ_API_KEY` is still accepted as a fallback, but `GROQ_KEY` is preferred.
+
+If `GROQ_KEY` and `BOT_TOKEN` are missing, the bot will run in a degraded mode and print helpful warnings.
 
 Note: `artovix_memory.json` and `artovix_brain.json` are ignored by default.
 
@@ -49,7 +51,7 @@ heroku create my-ai-bot
 
 ```bash
 heroku config:set BOT_TOKEN=your_telegram_token
-heroku config:set GROQ_API_KEY=your_groq_key
+heroku config:set GROQ_KEY=your_groq_key
 heroku config:set HF_API_KEY=your_hf_key
 ```
 

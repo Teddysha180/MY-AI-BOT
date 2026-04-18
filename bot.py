@@ -131,6 +131,8 @@ VISION_MODEL_CACHE_TTL_SEC = int(os.getenv("VISION_MODEL_CACHE_TTL_SEC", "900"))
 _VISION_MODEL_CACHE = {"ts": 0, "models": []}
 CHAT_HISTORY_CONTEXT_MESSAGES = max(4, int(os.getenv("CHAT_HISTORY_CONTEXT_MESSAGES", "12")))
 CHAT_HISTORY_MAX_MESSAGES = max(CHAT_HISTORY_CONTEXT_MESSAGES, int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "60")))
+GROQ_TRANSIENT_RETRIES = max(1, int(os.getenv("GROQ_TRANSIENT_RETRIES", "2")))
+GROQ_RETRY_BACKOFF_SEC = max(0.5, float(os.getenv("GROQ_RETRY_BACKOFF_SEC", "1.5")))
 
 # Initialize clients with safer handling so the module can run without keys
 groq_client = None
@@ -1479,6 +1481,15 @@ def _broadcast_payload_to_users(payload, button_text=None, button_url=None):
             failed += 1
     return delivered, failed
 
+def is_transient_groq_error(exc: Exception) -> bool:
+    txt = str(exc or "").lower()
+    transient_markers = [
+        "rate limit", "429", "timeout", "timed out", "temporarily unavailable",
+        "temporary", "connection reset", "connection aborted", "service unavailable",
+        "502", "503", "504", "bad gateway", "gateway timeout"
+    ]
+    return any(marker in txt for marker in transient_markers)
+
 def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
     """Try primary and fallback Groq chat models before failing."""
     if not groq_client:
@@ -1493,22 +1504,30 @@ def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
 
     last_error = None
     for model in models:
-        try:
-            response = groq_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            choice = response.choices[0] if response and response.choices else None
-            content = choice.message.content if choice else None
-            finish_reason = getattr(choice, "finish_reason", None) if choice else None
-            if content:
-                return content, model, finish_reason
-            raise RuntimeError(f"Empty response content from model: {model}")
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Groq chat model failed ({model}): {e}")
+        for attempt in range(1, GROQ_TRANSIENT_RETRIES + 1):
+            try:
+                response = groq_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                choice = response.choices[0] if response and response.choices else None
+                content = choice.message.content if choice else None
+                finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                if content:
+                    return content, model, finish_reason
+                raise RuntimeError(f"Empty response content from model: {model}")
+            except Exception as e:
+                last_error = e
+                should_retry = is_transient_groq_error(e) and attempt < GROQ_TRANSIENT_RETRIES
+                logger.warning(
+                    f"Groq chat model failed ({model}, attempt {attempt}/{GROQ_TRANSIENT_RETRIES}): {e}"
+                )
+                if should_retry:
+                    time.sleep(GROQ_RETRY_BACKOFF_SEC * attempt)
+                    continue
+                break
 
     raise last_error if last_error else RuntimeError("All Groq chat models failed.")
 

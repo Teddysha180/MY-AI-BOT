@@ -1699,10 +1699,21 @@ class ImageGenerator:
                 try:
                     encoded_prompt = requests.utils.quote(clean_prompt)
                     url1 = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-                    logger.info(f"Trying Pollinations.ai...")
+                    logger.info("Trying Pollinations.ai Flux...")
                     
                     headers = {'User-Agent': 'Mozilla/5.0'}
-                    response = requests.get(url1, headers=headers, timeout=15)
+                    response = requests.get(
+                        url1,
+                        params={
+                            "model": "flux",
+                            "width": 1024,
+                            "height": 1024,
+                            "enhance": "true",
+                            "nologo": "true",
+                        },
+                        headers=headers,
+                        timeout=30,
+                    )
                     
                     if response.status_code == 200:
                         content_type = response.headers.get('content-type', '')

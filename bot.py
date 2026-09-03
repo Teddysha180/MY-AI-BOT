@@ -110,8 +110,14 @@ HF_KEY = os.getenv("HF_API_KEY")
 
 def normalize_chat_model(model, default):
     configured = (model or default).strip()
-    if configured.lower() in {"compound", "groq/compound", "compound-beta"}:
-        return "groq/compound-mini"
+    if configured.lower() in {
+        "compound",
+        "groq/compound",
+        "compound-beta",
+        "compound-mini",
+        "groq/compound-mini",
+    }:
+        return "llama-3.1-8b-instant"
     return configured
 
 CHAT_MODEL = normalize_chat_model(

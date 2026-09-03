@@ -1702,24 +1702,28 @@ class ImageGenerator:
                     logger.info("Trying Pollinations.ai Flux...")
                     
                     headers = {'User-Agent': 'Mozilla/5.0'}
-                    response = requests.get(
-                        url1,
-                        params={
-                            "model": "flux",
-                            "width": 1024,
-                            "height": 1024,
-                            "enhance": "true",
-                            "nologo": "true",
-                        },
-                        headers=headers,
-                        timeout=30,
-                    )
-                    
-                    if response.status_code == 200:
+                    params = {
+                        "model": "flux",
+                        "width": 1024,
+                        "height": 1024,
+                        "enhance": "true",
+                        "nologo": "true",
+                    }
+                    for attempt in range(2):
+                        response = requests.get(
+                            url1,
+                            params=params,
+                            headers=headers,
+                            timeout=30,
+                        )
                         content_type = response.headers.get('content-type', '')
-                        if 'image' in content_type.lower():
-                            logger.info("✓ Pollinations.ai successful!")
+                        if response.status_code == 200 and 'image' in content_type.lower() and len(response.content) > 1000:
+                            logger.info("✓ Pollinations.ai Flux successful!")
                             return response.content
+                        logger.warning(
+                            f"Pollinations Flux attempt {attempt + 1} failed "
+                            f"({response.status_code}, {len(response.content)} bytes)"
+                        )
                 except Exception as e:
                     logger.warning(f"Pollinations.ai failed: {str(e)[:100]}")
             

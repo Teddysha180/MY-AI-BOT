@@ -110,14 +110,6 @@ HF_KEY = os.getenv("HF_API_KEY")
 
 def normalize_chat_model(model, default):
     configured = (model or default).strip()
-    if configured.lower() in {
-        "compound",
-        "groq/compound",
-        "compound-beta",
-        "compound-mini",
-        "groq/compound-mini",
-    }:
-        return "llama-3.1-8b-instant"
     return configured
 
 CHAT_MODEL = normalize_chat_model(
@@ -125,6 +117,9 @@ CHAT_MODEL = normalize_chat_model(
 )
 CHAT_MODEL_FALLBACK = normalize_chat_model(
     os.getenv("GROQ_CHAT_MODEL_FALLBACK"), "llama-3.1-8b-instant"
+)
+CHAT_MODEL_CURRENT = normalize_chat_model(
+    os.getenv("GROQ_CHAT_MODEL_CURRENT"), "qwen/qwen3.6-27b"
 )
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
 VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
@@ -1512,7 +1507,7 @@ def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
     if not groq_client:
         raise RuntimeError("Groq client not configured.")
 
-    candidates = [CHAT_MODEL, CHAT_MODEL_FALLBACK]
+    candidates = [CHAT_MODEL, CHAT_MODEL_FALLBACK, CHAT_MODEL_CURRENT]
     # Preserve order while removing duplicates/empty values
     models = []
     for model in candidates:

@@ -125,9 +125,9 @@ def normalize_chat_model(model, default):
     return configured
 
 if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
-    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
-    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-8b-instruct"
-    DEFAULT_CHAT_CURRENT = "deepseek-ai/deepseek-r1"
+    DEFAULT_CHAT_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
+    DEFAULT_CHAT_FALLBACK = "mistralai/mistral-large-2-instruct"
+    DEFAULT_CHAT_CURRENT = "deepseek-ai/deepseek-v4.1-flash"
     DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
     DEFAULT_VISION_FALLBACK = "meta/llama-3.2-90b-vision-instruct"
 else:
@@ -1588,20 +1588,22 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
-                "meta/llama-3.3-70b-instruct",
-                CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
-                "meta/llama-3.1-8b-instruct",
-                CHAT_MODEL_CURRENT if "/" in CHAT_MODEL_CURRENT else None,
-                "deepseek-ai/deepseek-r1",
                 "nvidia/llama-3.1-nemotron-70b-instruct",
+                "mistralai/mistral-large-2-instruct",
+                "deepseek-ai/deepseek-v4.1-flash",
+                "google/gemma-3-12b-it",
+                "nvidia/llama-3.1-nemotron-51b-instruct",
+                "meta/llama-3.2-11b-vision-instruct",
             ]
         else:
             candidates = [
                 model if (model and "/" not in model) else None,
                 CHAT_MODEL if "/" not in CHAT_MODEL else None,
                 "llama-3.3-70b-versatile",
-                CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 "llama-3.1-8b-instant",
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+                CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
                 "qwen/qwen3.6-27b",
             ]
@@ -3495,10 +3497,10 @@ def handle_all_messages(message):
                         "⏳ *Too many requests right now.*\n\n"
                         "Please wait 10-20 seconds and try again."
                     )
-                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer", "forbidden")):
+                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer", "forbidden", "authorization failed")):
                     user_msg = (
-                        "🔐 *AI key issue detected.*\n\n"
-                        "Please check `NVIDIA_API_KEY` (or `GROQ_API_KEY`) in your Render environment variables."
+                        "🔐 *AI key permission issue detected.*\n\n"
+                        "If using NVIDIA, ensure your key has **'Public API Endpoints'** enabled on build.nvidia.com, or check `NVIDIA_API_KEY`."
                     )
                 elif "model" in err and (
                     status_code in {400, 404}

@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  artovix:
+    build: .
+    container_name: artovix-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./artovix.log:/app/artovix.log
+      - ./artovix_memory.json:/app/artovix_memory.json
+      - ./analytics.db:/app/analytics.db
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Worker doesn't expose ports; it's a background bot

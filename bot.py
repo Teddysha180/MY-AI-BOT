@@ -4,7 +4,14 @@ import json
 import logging
 import requests
 from datetime import datetime
-from groq import Groq
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -106,23 +113,54 @@ LOG_FILE = data_path("artovix.log")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_KEY") or os.getenv("GROQ_API_KEY")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_KEY") or os.getenv("NVAPI_KEY")
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 HF_KEY = os.getenv("HF_API_KEY")
+
+DEFAULT_AI_PROVIDER = "nvidia" if NVIDIA_API_KEY else "groq"
+AI_PROVIDER = (os.getenv("AI_PROVIDER") or DEFAULT_AI_PROVIDER).strip().lower()
 
 def normalize_chat_model(model, default):
     configured = (model or default).strip()
     return configured
 
+if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
+    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
+    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-8b-instruct"
+    DEFAULT_CHAT_CURRENT = "deepseek-ai/deepseek-r1"
+    DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
+    DEFAULT_VISION_FALLBACK = "meta/llama-3.2-90b-vision-instruct"
+else:
+    DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
+    DEFAULT_CHAT_FALLBACK = "llama-3.1-8b-instant"
+    DEFAULT_CHAT_CURRENT = "qwen/qwen3.6-27b"
+    DEFAULT_VISION_MODEL = "llama-3.2-11b-vision-preview"
+    DEFAULT_VISION_FALLBACK = "llama-3.2-90b-vision-preview"
+
 CHAT_MODEL = normalize_chat_model(
-    os.getenv("GROQ_CHAT_MODEL"), "llama-3.3-70b-versatile"
+    os.getenv("CHAT_MODEL") or os.getenv("NVIDIA_CHAT_MODEL") or os.getenv("GROQ_CHAT_MODEL"),
+    DEFAULT_CHAT_MODEL
 )
 CHAT_MODEL_FALLBACK = normalize_chat_model(
-    os.getenv("GROQ_CHAT_MODEL_FALLBACK"), "llama-3.1-8b-instant"
+    os.getenv("CHAT_MODEL_FALLBACK") or os.getenv("NVIDIA_CHAT_MODEL_FALLBACK") or os.getenv("GROQ_CHAT_MODEL_FALLBACK"),
+    DEFAULT_CHAT_FALLBACK
 )
 CHAT_MODEL_CURRENT = normalize_chat_model(
-    os.getenv("GROQ_CHAT_MODEL_CURRENT"), "qwen/qwen3.6-27b"
+    os.getenv("CHAT_MODEL_CURRENT") or os.getenv("NVIDIA_CHAT_MODEL_CURRENT") or os.getenv("GROQ_CHAT_MODEL_CURRENT"),
+    DEFAULT_CHAT_CURRENT
 )
-VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
-VISION_MODEL_FALLBACK = os.getenv("GROQ_VISION_MODEL_FALLBACK", "llama-3.2-90b-vision-preview")
+VISION_MODEL = (
+    os.getenv("VISION_MODEL")
+    or os.getenv("NVIDIA_VISION_MODEL")
+    or os.getenv("GROQ_VISION_MODEL")
+    or DEFAULT_VISION_MODEL
+)
+VISION_MODEL_FALLBACK = (
+    os.getenv("VISION_MODEL_FALLBACK")
+    or os.getenv("NVIDIA_VISION_MODEL_FALLBACK")
+    or os.getenv("GROQ_VISION_MODEL_FALLBACK")
+    or DEFAULT_VISION_FALLBACK
+)
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "https://t.me/arts_of_drawings")
 REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "@arts_of_drawings").strip()
 ADMIN_USER_IDS = {
@@ -147,19 +185,38 @@ GROQ_TRANSIENT_RETRIES = max(1, int(os.getenv("GROQ_TRANSIENT_RETRIES", "2")))
 GROQ_RETRY_BACKOFF_SEC = max(0.5, float(os.getenv("GROQ_RETRY_BACKOFF_SEC", "1.5")))
 
 # Initialize clients with safer handling so the module can run without keys
+nvidia_client = None
 groq_client = None
 bot = None
 
+if NVIDIA_API_KEY:
+    if OpenAI:
+        try:
+            nvidia_client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY)
+            print("✅ NVIDIA NIM client initialized successfully.")
+        except Exception as e:
+            print(f"⚠️ NVIDIA NIM client init warning: {e}")
+            logger = logging.getLogger(__name__)
+            logger.warning(f"NVIDIA NIM client init failed: {e}")
+            nvidia_client = None
+    else:
+        print("⚠️ openai package not installed; NVIDIA NIM client cannot initialize.")
+
 if GROQ_KEY:
-    try:
-        groq_client = Groq(api_key=GROQ_KEY)
-    except Exception as e:
-        print(f"⚠️ Groq client init warning: {e}")
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Groq client init failed: {e}")
-        groq_client = None
-else:
-    print("⚠️ GROQ_API_KEY not set; Groq features disabled.")
+    if Groq:
+        try:
+            groq_client = Groq(api_key=GROQ_KEY)
+            print("✅ Groq client initialized successfully.")
+        except Exception as e:
+            print(f"⚠️ Groq client init warning: {e}")
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Groq client init failed: {e}")
+            groq_client = None
+    else:
+        print("⚠️ groq package not installed; Groq client cannot initialize.")
+
+if not nvidia_client and not groq_client:
+    print("⚠️ Neither NVIDIA_API_KEY nor GROQ_API_KEY is configured; AI features will be disabled.")
 
 if BOT_TOKEN:
     try:
@@ -898,9 +955,9 @@ def get_last_ai_reply(user_id):
     return str(memory.get_setting(str(user_id), LAST_AI_REPLY_KEY, "") or "").strip()
 
 def ask_ai_text(user_id, prompt, temperature=0.5):
-    if not groq_client:
+    if not (nvidia_client or groq_client):
         return None
-    part, _, _ = groq_chat_with_fallback(
+    part, _, _ = ai_chat_with_fallback(
         messages=[
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLANGUAGE MODE:\n{build_language_instruction(user_id)}"},
             {"role": "user", "content": prompt},
@@ -1500,137 +1557,148 @@ def _broadcast_payload_to_users(payload, button_text=None, button_url=None):
 def is_transient_groq_error(exc: Exception) -> bool:
     txt = str(exc or "").lower()
     transient_markers = [
-        "rate limit", "429", "timeout", "timed out", "temporarily unavailable",
+        "rate limit", "ratelimit", "429", "timeout", "timed out", "temporarily unavailable",
         "temporary", "connection reset", "connection aborted", "service unavailable",
         "502", "503", "504", "bad gateway", "gateway timeout"
     ]
     return any(marker in txt for marker in transient_markers)
 
-def groq_chat_with_fallback(messages, temperature=0.7, max_tokens=400):
-    """Try primary and fallback Groq chat models before failing."""
-    if not groq_client:
-        raise RuntimeError("Groq client not configured.")
+is_transient_ai_error = is_transient_groq_error
 
-    candidates = [CHAT_MODEL, CHAT_MODEL_FALLBACK, CHAT_MODEL_CURRENT]
-    # Preserve order while removing duplicates/empty values
-    models = []
-    for model in candidates:
-        if model and model not in models:
-            models.append(model)
+def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
+    """Try primary and fallback chat models across NVIDIA NIM and Groq before failing."""
+    if not nvidia_client and not groq_client:
+        raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
+
+    providers = []
+    if AI_PROVIDER == "nvidia":
+        if nvidia_client:
+            providers.append(("nvidia", nvidia_client))
+        if groq_client:
+            providers.append(("groq", groq_client))
+    else:
+        if groq_client:
+            providers.append(("groq", groq_client))
+        if nvidia_client:
+            providers.append(("nvidia", nvidia_client))
 
     last_error = None
-    for model in models:
-        for attempt in range(1, GROQ_TRANSIENT_RETRIES + 1):
+    for provider_name, client in providers:
+        if provider_name == "nvidia":
+            candidates = [
+                model if (model and "/" in model) else None,
+                CHAT_MODEL if "/" in CHAT_MODEL else None,
+                "meta/llama-3.3-70b-instruct",
+                CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
+                "meta/llama-3.1-8b-instruct",
+                CHAT_MODEL_CURRENT if "/" in CHAT_MODEL_CURRENT else None,
+                "deepseek-ai/deepseek-r1",
+                "nvidia/llama-3.1-nemotron-70b-instruct",
+            ]
+        else:
+            candidates = [
+                model if (model and "/" not in model) else None,
+                CHAT_MODEL if "/" not in CHAT_MODEL else None,
+                "llama-3.3-70b-versatile",
+                CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
+                "llama-3.1-8b-instant",
+                CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
+                "qwen/qwen3.6-27b",
+            ]
+
+        models = []
+        for m in candidates:
+            if m and m not in models:
+                models.append(m)
+
+        for mod in models:
+            for attempt in range(1, GROQ_TRANSIENT_RETRIES + 1):
+                try:
+                    response = client.chat.completions.create(
+                        model=mod,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    choice = response.choices[0] if response and response.choices else None
+                    content = choice.message.content if choice else None
+                    finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                    if content:
+                        return content, mod, finish_reason
+                    raise RuntimeError(f"Empty response content from {provider_name} model: {mod}")
+                except Exception as e:
+                    last_error = e
+                    should_retry = is_transient_ai_error(e) and attempt < GROQ_TRANSIENT_RETRIES
+                    logger.warning(
+                        f"{provider_name.capitalize()} chat model failed ({mod}, attempt {attempt}/{GROQ_TRANSIENT_RETRIES}): {e}"
+                    )
+                    if should_retry:
+                        time.sleep(GROQ_RETRY_BACKOFF_SEC * attempt)
+                        continue
+                    break
+
+    raise last_error if last_error else RuntimeError("All AI chat models failed.")
+
+groq_chat_with_fallback = ai_chat_with_fallback
+
+def ai_vision_with_fallback(messages, max_tokens=500):
+    """Try vision-capable models across NVIDIA NIM and Groq before failing."""
+    if not nvidia_client and not groq_client:
+        raise RuntimeError("No AI client configured for vision. Set NVIDIA_API_KEY or GROQ_API_KEY.")
+
+    providers = []
+    if AI_PROVIDER == "nvidia":
+        if nvidia_client:
+            providers.append(("nvidia", nvidia_client))
+        if groq_client:
+            providers.append(("groq", groq_client))
+    else:
+        if groq_client:
+            providers.append(("groq", groq_client))
+        if nvidia_client:
+            providers.append(("nvidia", nvidia_client))
+
+    last_error = None
+    for provider_name, client in providers:
+        if provider_name == "nvidia":
+            candidates = [
+                VISION_MODEL if "/" in VISION_MODEL else None,
+                "meta/llama-3.2-11b-vision-instruct",
+                VISION_MODEL_FALLBACK if "/" in VISION_MODEL_FALLBACK else None,
+                "meta/llama-3.2-90b-vision-instruct",
+            ]
+        else:
+            candidates = [
+                VISION_MODEL if "/" not in VISION_MODEL else None,
+                VISION_MODEL_FALLBACK if "/" not in VISION_MODEL_FALLBACK else None,
+                "llama-3.2-11b-vision-preview",
+                "llama-3.2-90b-vision-preview",
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+            ]
+
+        models = []
+        for m in candidates:
+            if m and m not in models:
+                models.append(m)
+
+        for mod in models:
             try:
-                response = groq_client.chat.completions.create(
-                    model=model,
+                response = client.chat.completions.create(
+                    model=mod,
                     messages=messages,
-                    temperature=temperature,
                     max_tokens=max_tokens
                 )
-                choice = response.choices[0] if response and response.choices else None
-                content = choice.message.content if choice else None
-                finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                content = response.choices[0].message.content if response and response.choices else None
                 if content:
-                    return content, model, finish_reason
-                raise RuntimeError(f"Empty response content from model: {model}")
+                    return content, mod
+                raise RuntimeError(f"Empty vision response from {provider_name} model: {mod}")
             except Exception as e:
                 last_error = e
-                should_retry = is_transient_groq_error(e) and attempt < GROQ_TRANSIENT_RETRIES
-                logger.warning(
-                    f"Groq chat model failed ({model}, attempt {attempt}/{GROQ_TRANSIENT_RETRIES}): {e}"
-                )
-                if should_retry:
-                    time.sleep(GROQ_RETRY_BACKOFF_SEC * attempt)
-                    continue
-                break
+                logger.warning(f"{provider_name.capitalize()} vision model failed ({mod}): {e}")
 
-    raise last_error if last_error else RuntimeError("All Groq chat models failed.")
+    raise last_error if last_error else RuntimeError("All AI vision models failed.")
 
-def groq_vision_with_fallback(messages, max_tokens=500):
-    """Try configured and discovered Groq vision-capable models before failing."""
-    if not groq_client:
-        raise RuntimeError("Groq client not configured.")
-
-    def _extract_model_id(model_obj):
-        try:
-            if isinstance(model_obj, dict):
-                return model_obj.get("id")
-            return getattr(model_obj, "id", None)
-        except:
-            return None
-
-    def _model_supports_image(model_obj):
-        """Best-effort capability check across different SDK response shapes."""
-        try:
-            if isinstance(model_obj, dict):
-                modalities = model_obj.get("input_modalities") or model_obj.get("modalities") or []
-            else:
-                modalities = (
-                    getattr(model_obj, "input_modalities", None)
-                    or getattr(model_obj, "modalities", None)
-                    or []
-                )
-            modalities_text = " ".join([str(x).lower() for x in modalities])
-            if "image" in modalities_text or "vision" in modalities_text:
-                return True
-        except:
-            pass
-        model_id = str(_extract_model_id(model_obj) or "").lower()
-        return ("vision" in model_id) or ("llama-4" in model_id and "scout" in model_id)
-
-    def _discover_vision_models():
-        now = time.time()
-        if _VISION_MODEL_CACHE["models"] and (now - _VISION_MODEL_CACHE["ts"] < VISION_MODEL_CACHE_TTL_SEC):
-            return list(_VISION_MODEL_CACHE["models"])
-        discovered = []
-        try:
-            listed = groq_client.models.list()
-            data = getattr(listed, "data", listed)
-            for m in data or []:
-                model_id = _extract_model_id(m)
-                if not model_id:
-                    continue
-                if _model_supports_image(m):
-                    discovered.append(model_id)
-        except Exception as e:
-            logger.warning(f"Vision model discovery failed: {e}")
-        _VISION_MODEL_CACHE["ts"] = now
-        _VISION_MODEL_CACHE["models"] = discovered
-        return discovered
-
-    # Ordered candidates: explicit env -> discovered vision-capable -> hardcoded safety list.
-    discovered = _discover_vision_models()
-    candidates = [
-        VISION_MODEL,
-        VISION_MODEL_FALLBACK,
-        *discovered,
-        "llama-3.2-90b-vision-preview",
-        "llama-3.2-11b-vision-preview",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-    ]
-    models = []
-    for model in candidates:
-        if model and model not in models:
-            models.append(model)
-
-    last_error = None
-    for model in models:
-        try:
-            response = groq_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens
-            )
-            content = response.choices[0].message.content if response and response.choices else None
-            if content:
-                return content, model
-            raise RuntimeError(f"Empty vision response from model: {model}")
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Groq vision model failed ({model}): {e}")
-
-    raise last_error if last_error else RuntimeError("All Groq vision models failed.")
+groq_vision_with_fallback = ai_vision_with_fallback
 
 # ============================================================================
 # 🖼️ IMAGE GENERATOR (IMPROVED WITH MULTIPLE SERVICES)
@@ -1750,18 +1818,17 @@ class ImageGenerator:
                     logger.info("Creating enhanced text description fallback...")
                     description_prompt = f"Create a detailed visual description for: {clean_prompt}"
                     
-                    if not groq_client:
-                        logger.warning("Groq unavailable: cannot create text fallback description.")
+                    if not (nvidia_client or groq_client):
+                        logger.warning("AI backend unavailable: cannot create text fallback description.")
                         return {
                             'type': 'text',
                             'prompt': clean_prompt,
-                            'description': "AI backend not configured. Set GROQ_API_KEY in .env to enable detailed descriptions.",
+                            'description': "AI backend not configured. Set NVIDIA_API_KEY or GROQ_API_KEY in .env to enable detailed descriptions.",
                             'emojis': '⚠️',
-                            'suggestion': "Add GROQ_API_KEY to .env and restart the bot."
+                            'suggestion': "Add NVIDIA_API_KEY or GROQ_API_KEY to .env and restart the bot."
                         }
 
-                    response = groq_client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                    content, _, _ = ai_chat_with_fallback(
                         messages=[{"role": "user", "content": description_prompt}],
                         temperature=0.8,
                         max_tokens=200
@@ -1770,7 +1837,7 @@ class ImageGenerator:
                     return {
                         'type': 'text',
                         'prompt': clean_prompt,
-                        'description': response.choices[0].message.content,
+                        'description': content,
                         'emojis': '🎨✨',
                         'suggestion': "Try a different prompt or simpler description."
                     }
@@ -2044,19 +2111,18 @@ def handle_search(message):
         Keep it professional, accurate, and formatted for a mobile chat interface."""
         
         try:
-            if not groq_client:
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable search features.")
+            if not (nvidia_client or groq_client):
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable search features.")
                 return
 
-            # Get response from Groq
-            response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            # Get response from AI backend
+            content, _, _ = ai_chat_with_fallback(
                 messages=[{"role": "user", "content": search_prompt}],
                 temperature=0.7,
                 max_tokens=500
             )
 
-            answer = clean_markdown(response.choices[0].message.content)
+            answer = clean_markdown(content)
 
             # Send result
             result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
@@ -2146,12 +2212,11 @@ OUTPUT FORMAT RULES:
 - Keep code practical and runnable."""
         
         try:
-            if not groq_client:
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable code analysis.")
+            if not (nvidia_client or groq_client):
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable code analysis.")
                 return
 
-            response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            content, _, _ = ai_chat_with_fallback(
                 messages=[{"role": "user", "content": code_prompt}],
                 temperature=0.3,
                 max_tokens=600
@@ -2159,7 +2224,7 @@ OUTPUT FORMAT RULES:
 
             preferred_language = detect_code_language(code_text)
             analysis = ensure_copyable_code_blocks(
-                response.choices[0].message.content,
+                content,
                 preferred_language=preferred_language
             )
             analysis = clean_markdown(analysis)
@@ -2353,8 +2418,8 @@ def handle_summarize(message):
                 "Use `/summarize your text` or reply to a message with `/summarize`."
             )
             return
-        if not groq_client:
-            safe_send_message(message.chat.id, "🔌 AI backend unavailable.")
+        if not (nvidia_client or groq_client):
+            safe_send_message(message.chat.id, "🔌 AI backend unavailable. Set `NVIDIA_API_KEY` or `GROQ_API_KEY`.")
             return
 
         bot.send_chat_action(message.chat.id, 'typing')
@@ -2507,8 +2572,8 @@ def handle_askdoc(message):
         query = parts[1].strip()
         bot.send_chat_action(message.chat.id, 'typing')
 
-        if not groq_client:
-            safe_send_message(message.chat.id, "🔌 *AI backend not configured.* Set `GROQ_API_KEY`.")
+        if not (nvidia_client or groq_client):
+            safe_send_message(message.chat.id, "🔌 *AI backend not configured.* Set `NVIDIA_API_KEY` or `GROQ_API_KEY`.")
             return
 
         prompt = (
@@ -2519,13 +2584,12 @@ def handle_askdoc(message):
             "Give a clear answer. If the answer is not in the document, say that briefly."
         )
 
-        response = groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        content, _, _ = ai_chat_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=700
         )
-        answer = clean_markdown(response.choices[0].message.content)
+        answer = clean_markdown(content)
         final_text = f"📄 *Doc Answer ({doc_name}):*\n\n{answer}"
         save_last_ai_reply(message.chat.id, final_text)
         send_ai_reply(message.chat.id, final_text, reply_markup=maybe_followup_markup(final_text))
@@ -3167,10 +3231,14 @@ def handle_voice(message):
         with open(temp_filename, 'wb') as f:
             f.write(downloaded_file)
         
-        # Transcribe with Groq Whisper
+        # Transcribe with Groq Whisper if available
         with open(temp_filename, "rb") as audio_file:
             if not groq_client:
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable voice transcription.")
+                safe_send_message(
+                    message.chat.id,
+                    "🎤 *Voice transcription is unavailable without Groq Whisper.*\n\n"
+                    "Text chat and vision are active with NVIDIA NIM! Please send your query as a text message."
+                )
                 return
 
             transcription = groq_client.audio.transcriptions.create(
@@ -3216,9 +3284,9 @@ def handle_photo(message):
         # Get caption or use default
         prompt = message.caption if message.caption else "Describe this image in detail and tell me what you see."
         
-        # Analyze with Groq Vision
-        if not groq_client:
-            safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable vision features.")
+        # Analyze with Vision
+        if not (nvidia_client or groq_client):
+            safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable vision features.")
             return
 
         vision_messages = [
@@ -3236,7 +3304,7 @@ def handle_photo(message):
             }
         ]
 
-        analysis_raw, used_model = groq_vision_with_fallback(
+        analysis_raw, used_model = ai_vision_with_fallback(
             messages=vision_messages,
             max_tokens=500
         )
@@ -3250,8 +3318,8 @@ def handle_photo(message):
     except Exception as e:
         logger.error(f"Vision handling error: {e}")
         err = str(e).lower()
-        if "api key" in err or "unauthorized" in err or "authentication" in err:
-            msg = "🔐 *Vision key/auth issue.*\nPlease check `GROQ_API_KEY` in Render environment variables."
+        if "api key" in err or "unauthorized" in err or "authentication" in err or "forbidden" in err:
+            msg = "🔐 *Vision key/auth issue.*\nPlease check `NVIDIA_API_KEY` (or `GROQ_API_KEY`) in Render environment variables."
         elif "model" in err and ("not found" in err or "not available" in err or "decommissioned" in err):
             msg = "🧠 *Vision model unavailable right now.*\nI tried fallback models. Please retry in a moment."
         elif "413" in err or "too large" in err:
@@ -3367,8 +3435,8 @@ def handle_all_messages(message):
         bot.send_chat_action(message.chat.id, 'typing')
         
         try:
-            if not groq_client:
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `GROQ_API_KEY` in your .env to enable chat responses.")
+            if not (nvidia_client or groq_client):
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable chat responses.")
                 return
 
             local_messages = list(messages)
@@ -3427,10 +3495,10 @@ def handle_all_messages(message):
                         "⏳ *Too many requests right now.*\n\n"
                         "Please wait 10-20 seconds and try again."
                     )
-                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer")):
+                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer", "forbidden")):
                     user_msg = (
                         "🔐 *AI key issue detected.*\n\n"
-                        "Please check `GROQ_API_KEY` in your Render environment variables."
+                        "Please check `NVIDIA_API_KEY` (or `GROQ_API_KEY`) in your Render environment variables."
                     )
                 elif "model" in err and (
                     status_code in {400, 404}
@@ -3478,7 +3546,7 @@ def handle_inline_query(query):
         qtext = (getattr(query, "query", "") or "").strip()
         if not qtext:
             return
-        if not groq_client:
+        if not (nvidia_client or groq_client):
             return
 
         inline_user_id = getattr(getattr(query, "from_user", None), "id", 0)
@@ -3488,13 +3556,12 @@ def handle_inline_query(query):
             f"{language_instruction}\n\n"
             f"User query: {qtext}"
         )
-        response = groq_client.chat.completions.create(
-            model=CHAT_MODEL_FALLBACK,
+        content, _, _ = ai_chat_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.6,
             max_tokens=220
         )
-        answer = clean_markdown(response.choices[0].message.content)
+        answer = clean_markdown(content)
 
         result = InlineQueryResultArticle(
             id=str(uuid4()),

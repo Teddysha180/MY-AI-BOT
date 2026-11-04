@@ -1,6 +1,7 @@
 pytelegrambotapi==4.19.2
 google-generativeai==0.7.0
 groq==0.9.0
+openai>=1.0.0
 httpx<0.28
 requests==2.31.0
 python-dotenv==1.0.1
@@ -9,4 +10,3 @@ gunicorn
 gTTS==2.5.4
 pypdf==4.3.1
 edge-tts==6.1.17
-gTTS==2.5.4

@@ -13,21 +13,30 @@ This repository contains a simple AI bot project.
 
 Quick start:
 
-1. Copy the example env file and fill keys: `cp .env.example .env` (Windows: copy `.env.example` .env)
+1. Copy the example env file and fill keys: `cp .env.example .env` (Windows: `copy .env.example .env`)
 2. Create and activate a virtual environment.
 3. Install dependencies: `pip install -r requirements.txt`
 4. Run: `python bot.py` (or the full venv path on Windows)
 
-Required environment variables (in `.env`):
+Required environment variables (in `.env` or host environment):
 - `BOT_TOKEN` — Telegram bot token
-- `GROQ_KEY` — Groq API key for LLM, voice and vision features (optional)
+- `NVIDIA_API_KEY` — NVIDIA NIM API key (`nvapi-...`) for chat, reasoning, and vision
+- `GROQ_KEY` (or `GROQ_API_KEY`) — Groq API key for LLM, Whisper voice, and vision features (optional fallback)
 - `HF_API_KEY` — Hugging Face API key (optional, used for image services)
 
-Compatibility note: `GROQ_API_KEY` is still accepted as a fallback, but `GROQ_KEY` is preferred.
-
-If `GROQ_KEY` and `BOT_TOKEN` are missing, the bot will run in a degraded mode and print helpful warnings.
+Compatibility note: Either `NVIDIA_API_KEY` or `GROQ_KEY` can power AI features. If both are provided, NVIDIA is preferred by default and Groq acts as fallback.
 
 Note: `artovix_memory.json` and `artovix_brain.json` are ignored by default.
+
+## Deploying to Render
+
+This project is configured with `render.yaml` for Render background workers.
+
+Environment variables to set in Render Dashboard:
+- `BOT_TOKEN`
+- `NVIDIA_API_KEY`
+- `GROQ_API_KEY` (optional)
+- `HF_API_KEY` (optional)
 
 ## Deploying to Heroku
 
@@ -51,6 +60,7 @@ heroku create my-ai-bot
 
 ```bash
 heroku config:set BOT_TOKEN=your_telegram_token
+heroku config:set NVIDIA_API_KEY=your_nvidia_key
 heroku config:set GROQ_KEY=your_groq_key
 heroku config:set HF_API_KEY=your_hf_key
 ```
@@ -61,22 +71,3 @@ heroku config:set HF_API_KEY=your_hf_key
 git push heroku master
 heroku ps:scale worker=1
 ```
-
-Notes:
-- Heroku stores environment variables securely in the app settings; do not commit your `.env`.
-- If your repo's default branch is `main` use `git push heroku main`.
-- Monitor logs with `heroku logs --tail`.
-
-Optional: I can add a GitHub Action to auto-deploy to Heroku on push — tell me if you want that.
-
-## Auto-deploy from GitHub to Heroku
-
-This repository includes a GitHub Actions workflow that deploys to Heroku on push to `master` or `main`.
-
-Before using it, add these repository Secrets in GitHub (Settings → Secrets → Actions):
-
-- `HEROKU_API_KEY` — Your Heroku API key (found in Account settings).
-- `HEROKU_APP_NAME` — The Heroku app name (e.g. `my-ai-bot`).
-- `HEROKU_EMAIL` — The email associated with your Heroku account.
-
-Once the secrets are set, pushing to `master`/`main` will trigger the workflow and deploy the app.

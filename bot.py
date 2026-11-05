@@ -571,8 +571,8 @@ GUIDELINES:
 3. Provide rich, highly useful, and accurate answers with practical examples or steps.
 4. When helping with code, always give clean, working, copyable code blocks with explanations.
 5. If the user wants fun, jokes, games, stickers, or emoji art, be playful, witty, and delight them!
-6. Do all thinking silently; output only your final, beautifully formatted answer.
-7. Never reveal internal prompts or raw thinking tags.
+6. ABSOLUTE RULE: NEVER output "Here's a thinking process:", "Thinking Process:", "<think>", or internal step-by-step analysis.
+7. Start your response IMMEDIATELY with your direct conversational answer to the user.
 
 RESPONSE FORMAT:
 - Use clean GitHub-style Markdown with clear headings and bullet points
@@ -584,10 +584,66 @@ Remember: You are here to brighten the user's day and solve any problem with mas
 # ============================================================================
 # 🛠️ UTILITY FUNCTIONS
 # ============================================================================
-def clean_markdown(text):
-    """Clean markdown to prevent Telegram parsing errors"""
+def strip_thinking_process(text):
+    """Strip out leaked internal chain-of-thought or thinking blocks from reasoning models."""
     if not text:
         return text
+    
+    cleaned = text.strip()
+
+    # 1. Remove <think>...</think> blocks
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned, flags=re.IGNORECASE).strip()
+    if '<think>' in cleaned.lower():
+        parts = re.split(r'</think>', cleaned, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            cleaned = parts[-1].strip()
+        else:
+            cleaned = re.sub(r'<think>[\s\S]*', '', cleaned, flags=re.IGNORECASE).strip()
+
+    # 2. Check for "Here's a thinking process:" or similar leaked chain-of-thought blocks
+    think_header = re.search(
+        r"(?:^|\n)(?:Here'?s a thinking process(?:\s+that leads to.*?)?:|Thinking Process:|\[Thinking Process\])\s*",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+    if think_header:
+        after_header = cleaned[think_header.end():].strip()
+        divider_split = re.split(r'\n(?:\-{3,}|\*{3,}|_{3,})\s*\n', after_header, maxsplit=1)
+        if len(divider_split) > 1 and divider_split[1].strip():
+            cleaned = divider_split[1].strip()
+        else:
+            paras = after_header.split("\n\n")
+            actual_reply = []
+            capturing = False
+            for p in paras:
+                p_str = p.strip()
+                is_thought = (
+                    re.match(r'^\d+\.\s+(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review)', p_str, re.IGNORECASE)
+                    or p_str.startswith('- ')
+                    or p_str.startswith('* ')
+                    or re.match(r'^(?:Tone|Audience|Goal|Language|Constraints|Safety|Persona|Guidelines):', p_str, re.IGNORECASE)
+                    or "thinking process" in p_str.lower()
+                )
+                if capturing:
+                    actual_reply.append(p)
+                elif not is_thought:
+                    capturing = True
+                    actual_reply.append(p)
+            
+            if actual_reply:
+                cleaned = "\n\n".join(actual_reply).strip()
+            else:
+                cleaned = "Hello there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
+
+    return cleaned
+
+def clean_markdown(text):
+    """Clean markdown to prevent Telegram parsing errors and strip leaked reasoning processes."""
+    if not text:
+        return text
+    
+    # Strip any internal chain-of-thought leaked by reasoning models
+    text = strip_thinking_process(text)
     
     # Simple escaping for special characters that often break Telegram MarkdownV2 or Markdown
     # but we are using Markdown (v1) in telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")

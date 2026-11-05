@@ -126,9 +126,9 @@ def normalize_chat_model(model, default):
     return configured
 
 if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
-    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
-    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-8b-instruct"
-    DEFAULT_CHAT_CURRENT = "meta/llama-3.1-70b-instruct"
+    DEFAULT_CHAT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    DEFAULT_CHAT_FALLBACK = "meta/llama-3.3-70b-instruct"
+    DEFAULT_CHAT_CURRENT = "meta/llama-3.1-8b-instruct"
     DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
     DEFAULT_VISION_FALLBACK = "meta/llama-3.2-90b-vision-instruct"
 else:
@@ -1591,14 +1591,14 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             providers.append(("nvidia", nvidia_client))
 
     last_error = None
-    # Track empty-response counts per model so we blacklist them too
-    _empty_counts = {}
     for provider_name, client in providers:
         if provider_name == "nvidia":
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
-                # Active NVIDIA NIM models with free tier (Nov 2026)
+                # Primary: nemotron (user preference)
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                # Broad NVIDIA NIM fallbacks (Nov 2026)
                 "meta/llama-3.3-70b-instruct",
                 "meta/llama-3.1-70b-instruct",
                 "meta/llama-3.1-8b-instruct",
@@ -1640,16 +1640,22 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                         max_tokens=max_tokens
                     )
                     choice = response.choices[0] if response and response.choices else None
-                    content = choice.message.content if choice else None
+                    # Some NVIDIA models (e.g. nemotron) may return content in
+                    # reasoning_content when standard content is empty.
+                    content = None
+                    if choice:
+                        msg = choice.message
+                        content = getattr(msg, "content", None) or ""
+                        if not content.strip():
+                            # Try reasoning_content fallback for thinking models
+                            content = getattr(msg, "reasoning_content", None) or ""
+                        content = content.strip() or None
                     finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                    if content and content.strip():
+                    if content:
                         return content, mod, finish_reason
-                    # Empty response — blacklist this model immediately
-                    key = (provider_name, mod)
-                    _empty_counts[key] = _empty_counts.get(key, 0) + 1
-                    if _empty_counts[key] >= 1:
-                        _DEAD_MODELS.add(key)
-                    raise RuntimeError(f"Empty response content from {provider_name} model: {mod}")
+                    # Empty response — skip this model this time but do NOT permanently blacklist
+                    logger.warning(f"{provider_name.capitalize()} model '{mod}' returned empty content. Skipping.")
+                    break
                 except Exception as e:
                     last_error = e
                     if is_fatal_model_error(e):

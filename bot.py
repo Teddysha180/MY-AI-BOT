@@ -1596,9 +1596,19 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
+                # Active NVIDIA NIM models (verified Nov 2026)
                 "meta/llama-3.3-70b-instruct",
-                "meta/llama-3.1-8b-instruct",
                 "meta/llama-3.1-70b-instruct",
+                "meta/llama-3.1-8b-instruct",
+                "mistralai/mistral-nemo-12b-instruct",
+                "mistralai/mixtral-8x22b-instruct-v0.1",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "deepseek-ai/deepseek-r1",
+                "deepseek-ai/deepseek-v3",
+                "google/gemma-3-27b-it",
+                "google/gemma-3-12b-it",
+                "meta/llama-3.2-3b-instruct",
+                "meta/llama-3.2-1b-instruct",
                 CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
             ]
         else:
@@ -1607,6 +1617,9 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                 CHAT_MODEL if "/" not in CHAT_MODEL else None,
                 "llama-3.3-70b-versatile",
                 "llama-3.1-8b-instant",
+                "llama-3.1-70b-versatile",
+                "gemma2-9b-it",
+                "mixtral-8x7b-32768",
                 CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
             ]
@@ -2312,6 +2325,39 @@ def handle_stats(message):
 # ============================================================================
 # 🛡️ OTHER COMMANDS (FIXED)
 # ============================================================================
+@bot.message_handler(commands=['debug', 'aitest'])
+def handle_debug(message):
+    """Admin-only: test AI and show real error details."""
+    try:
+        if not require_main_admin(message):
+            return
+        bot.send_chat_action(message.chat.id, 'typing')
+        lines = [
+            f"🔧 *AI Debug Report*\n",
+            f"• `NVIDIA_API_KEY`: {'✅ set' if NVIDIA_API_KEY else '❌ missing'}",
+            f"• `GROQ_KEY`: {'✅ set' if GROQ_KEY else '❌ missing'}",
+            f"• `AI_PROVIDER`: `{AI_PROVIDER}`",
+            f"• `CHAT_MODEL`: `{CHAT_MODEL}`",
+            f"• Dead models blacklisted: `{len(_DEAD_MODELS)}`",
+            "",
+        ]
+        try:
+            content, model_used, _ = ai_chat_with_fallback(
+                messages=[{"role": "user", "content": "Say: OK"}],
+                temperature=0.1,
+                max_tokens=10
+            )
+            lines.append(f"✅ *AI responding!* Model: `{model_used}`")
+        except Exception as e:
+            lines.append(f"❌ *AI failed:*\n`{str(e)[:500]}`")
+            if _DEAD_MODELS:
+                dead_list = "\n".join(f"  - `{p}/{m}`" for p, m in sorted(_DEAD_MODELS))
+                lines.append(f"\n*Dead models:*\n{dead_list}")
+        safe_send_message(message.chat.id, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Debug command error: {e}")
+        safe_send_message(message.chat.id, f"Debug error: {e}")
+
 @bot.message_handler(commands=['reset'])
 def handle_reset(message):
     try:
@@ -3526,10 +3572,18 @@ def handle_all_messages(message):
                         "Please try again in a moment."
                     )
                 else:
-                    user_msg = (
-                        "⚠️ *AI service temporary issue.*\n\n"
-                        "Please try again in a moment."
-                    )
+                    # Show the actual error details to help diagnose (admin-visible)
+                    actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
+                    if actor_id in MAIN_ADMIN_IDS:
+                        user_msg = (
+                            f"⚠️ *AI Error (admin debug):*\n\n"
+                            f"`{str(api_error)[:300]}`"
+                        )
+                    else:
+                        user_msg = (
+                            "⚠️ *AI service temporary issue.*\n\n"
+                            "Please try again in a moment."
+                        )
                 safe_send_message(
                     message.chat.id,
                     user_msg

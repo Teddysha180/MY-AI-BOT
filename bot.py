@@ -119,54 +119,46 @@ LOG_FILE = data_path("artovix.log")
 STICKERS_STORE_FILE = data_path("stickers_vault.json")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_KEY = os.getenv("GROQ_KEY") or os.getenv("GROQ_API_KEY")
+GROQ_KEY = None  # Groq removed — using NVIDIA NIM exclusively
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_KEY") or os.getenv("NVAPI_KEY")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 HF_KEY = os.getenv("HF_API_KEY")
 
-# Default AI provider: prefer Groq for ultra-low latency if key is provided, else NVIDIA NIM
-DEFAULT_AI_PROVIDER = "groq" if GROQ_KEY else ("nvidia" if NVIDIA_API_KEY else "groq")
-AI_PROVIDER = (os.getenv("AI_PROVIDER") or DEFAULT_AI_PROVIDER).strip().lower()
+# AI provider: NVIDIA NIM exclusively
+DEFAULT_AI_PROVIDER = "nvidia"
+AI_PROVIDER = "nvidia"
 
 def normalize_chat_model(model, default):
     configured = (model or default).strip()
     return configured
 
-if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
-    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
-    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-70b-instruct"
-    DEFAULT_CHAT_CURRENT = "meta/llama-3.1-8b-instruct"
-    DEFAULT_VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
-    DEFAULT_VISION_FALLBACK = "meta/llama-3.2-11b-vision-instruct"
-else:
-    DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
-    DEFAULT_CHAT_FALLBACK = "llama-3.1-8b-instant"
-    DEFAULT_CHAT_CURRENT = "llama-3.1-8b-instant"
-    DEFAULT_VISION_MODEL = "llama-3.2-11b-vision-preview"
-    DEFAULT_VISION_FALLBACK = "llama-3.2-90b-vision-preview"
+# NVIDIA NIM model defaults
+DEFAULT_CHAT_MODEL    = "meta/llama-3.3-70b-instruct"
+DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-70b-instruct"
+DEFAULT_CHAT_CURRENT  = "meta/llama-3.1-8b-instruct"
+DEFAULT_VISION_MODEL  = "meta/llama-3.2-11b-vision-instruct"
+DEFAULT_VISION_FALLBACK = "meta/llama-3.2-11b-vision-instruct"
 
 CHAT_MODEL = normalize_chat_model(
-    os.getenv("CHAT_MODEL") or os.getenv("NVIDIA_CHAT_MODEL") or os.getenv("GROQ_CHAT_MODEL"),
+    os.getenv("CHAT_MODEL") or os.getenv("NVIDIA_CHAT_MODEL"),
     DEFAULT_CHAT_MODEL
 )
 CHAT_MODEL_FALLBACK = normalize_chat_model(
-    os.getenv("CHAT_MODEL_FALLBACK") or os.getenv("NVIDIA_CHAT_MODEL_FALLBACK") or os.getenv("GROQ_CHAT_MODEL_FALLBACK"),
+    os.getenv("CHAT_MODEL_FALLBACK") or os.getenv("NVIDIA_CHAT_MODEL_FALLBACK"),
     DEFAULT_CHAT_FALLBACK
 )
 CHAT_MODEL_CURRENT = normalize_chat_model(
-    os.getenv("CHAT_MODEL_CURRENT") or os.getenv("NVIDIA_CHAT_MODEL_CURRENT") or os.getenv("GROQ_CHAT_MODEL_CURRENT"),
+    os.getenv("CHAT_MODEL_CURRENT") or os.getenv("NVIDIA_CHAT_MODEL_CURRENT"),
     DEFAULT_CHAT_CURRENT
 )
 VISION_MODEL = (
     os.getenv("VISION_MODEL")
     or os.getenv("NVIDIA_VISION_MODEL")
-    or os.getenv("GROQ_VISION_MODEL")
     or DEFAULT_VISION_MODEL
 )
 VISION_MODEL_FALLBACK = (
     os.getenv("VISION_MODEL_FALLBACK")
     or os.getenv("NVIDIA_VISION_MODEL_FALLBACK")
-    or os.getenv("GROQ_VISION_MODEL_FALLBACK")
     or DEFAULT_VISION_FALLBACK
 )
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "https://t.me/arts_of_drawings")
@@ -189,14 +181,16 @@ VISION_MODEL_CACHE_TTL_SEC = int(os.getenv("VISION_MODEL_CACHE_TTL_SEC", "900"))
 _VISION_MODEL_CACHE = {"ts": 0, "models": []}
 CHAT_HISTORY_CONTEXT_MESSAGES = max(4, int(os.getenv("CHAT_HISTORY_CONTEXT_MESSAGES", "12")))
 CHAT_HISTORY_MAX_MESSAGES = max(CHAT_HISTORY_CONTEXT_MESSAGES, int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "60")))
-GROQ_TRANSIENT_RETRIES = max(1, int(os.getenv("GROQ_TRANSIENT_RETRIES", "2")))
-GROQ_RETRY_BACKOFF_SEC = max(0.5, float(os.getenv("GROQ_RETRY_BACKOFF_SEC", "1.5")))
+AI_TRANSIENT_RETRIES = max(1, int(os.getenv("AI_TRANSIENT_RETRIES", "2")))
+AI_RETRY_BACKOFF_SEC = max(0.5, float(os.getenv("AI_RETRY_BACKOFF_SEC", "1.5")))
+# Legacy aliases
+GROQ_TRANSIENT_RETRIES = AI_TRANSIENT_RETRIES
+GROQ_RETRY_BACKOFF_SEC = AI_RETRY_BACKOFF_SEC
 
-# Initialize clients with safer handling so the module can run without keys
-nvidia_client = None
-groq_client = None
-pollinations_client = None  # Free text API — no key required
-bot = None
+# Initialize clients
+nvidia_client  = None
+groq_client    = None   # Groq removed — NVIDIA NIM is the sole provider
+pollinations_client = None  # Image-only; never used for text
 
 if NVIDIA_API_KEY:
     if OpenAI:
@@ -210,26 +204,11 @@ if NVIDIA_API_KEY:
             nvidia_client = None
     else:
         print("⚠️ openai package not installed; NVIDIA NIM client cannot initialize.")
+else:
+    print("⚠️ NVIDIA_API_KEY not configured — bot will not respond to chat messages.")
 
-if GROQ_KEY:
-    if Groq:
-        try:
-            groq_client = Groq(api_key=GROQ_KEY, timeout=20.0)
-            print("✅ Groq client initialized successfully.")
-        except Exception as e:
-            print(f"⚠️ Groq client init warning: {e}")
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Groq client init failed: {e}")
-            groq_client = None
-    else:
-        print("⚠️ groq package not installed; Groq client cannot initialize.")
-
-# Pollinations.ai text API disabled — rate-limited (1 req/45s per IP).
-# Pollinations is ONLY used for image generation, not text responses.
-pollinations_client = None
-
-if not nvidia_client and not groq_client:
-    print("⚠️ Neither NVIDIA_API_KEY nor GROQ_API_KEY is configured — no AI text backend available.")
+if not nvidia_client:
+    print("⚠️ No AI backend available. Set NVIDIA_API_KEY in Render environment variables.")
 
 if BOT_TOKEN:
     try:
@@ -1880,193 +1859,107 @@ def is_fatal_model_error(exc: Exception) -> bool:
 is_transient_ai_error = is_transient_groq_error
 
 def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
-    """Try primary and fallback chat models across Groq and NVIDIA NIM before failing.
-    NOTE: Pollinations text API is intentionally excluded — it has a 45s/req rate limit.
-    """
-    if not nvidia_client and not groq_client:
-        raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
+    """NVIDIA NIM exclusive chat with waterfall model fallback."""
+    if not nvidia_client:
+        raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY in Render environment variables.")
 
-    providers = []
-    if AI_PROVIDER == "nvidia":
-        if nvidia_client:
-            providers.append(("nvidia", nvidia_client))
-        if groq_client:
-            providers.append(("groq", groq_client))
-    else:
-        if groq_client:
-            providers.append(("groq", groq_client))
-        if nvidia_client:
-            providers.append(("nvidia", nvidia_client))
-
-    # Pollinations text is NOT added here — image-only service.
-
-    last_error = None
-    for provider_name, client in providers:
-        if provider_name == "nvidia":
-            # NVIDIA NIM — verified working models (Nov 2026)
-            candidates = [
-                model if (model and "/" in model) else None,
-                CHAT_MODEL if "/" in CHAT_MODEL else None,
-                # Meta Llama — always available on NIM
-                "meta/llama-3.3-70b-instruct",
-                "meta/llama-3.1-70b-instruct",
-                "meta/llama-3.1-8b-instruct",
-                "meta/llama-3.2-3b-instruct",
-                "meta/llama-3.2-1b-instruct",
-                # Mistral
-                "mistralai/mistral-7b-instruct-v0.3",
-                "mistralai/mistral-nemo-12b-instruct",
-                # Google
-                "google/gemma-3-12b-it",
-                "google/gemma-3-4b-it",
-                # Microsoft
-                "microsoft/phi-3-mini-128k-instruct",
-                "microsoft/phi-3-medium-128k-instruct",
-                CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
-            ]
-        elif provider_name == "pollinations":
-            candidates = ["openai", "mistral", "qwen"]
-        else:
-            # Groq — verified working models (Nov 2026)
-            candidates = [
-                model if (model and "/" not in model) else None,
-                CHAT_MODEL if "/" not in CHAT_MODEL else None,
-                # Primary fast models
-                "llama-3.3-70b-versatile",          # Best quality, large context
-                "llama-3.1-8b-instant",              # Fastest
-                "llama-3.1-70b-versatile",           # High quality fallback
-                # Secondary models
-                "llama3-groq-70b-8192-tool-use-preview",
-                "llama3-groq-8b-8192-tool-use-preview",
-                "gemma2-9b-it",                      # Google Gemma 2 — fast & reliable
-                "gemma-7b-it",
-                "mixtral-8x7b-32768",                # Mistral — wide context
-                # Additional fallbacks
-                "llama-3.2-90b-text-preview",
-                "llama-3.2-11b-text-preview",
-                "llama-3.2-3b-preview",
-                "llama-3.2-1b-preview",
-                CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
-                CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
-            ]
-
-        models = []
-        for m in candidates:
-            if m and (provider_name, m) not in _DEAD_MODELS and m not in models:
-                models.append(m)
-
-        for mod in models:
-            for attempt in range(1, GROQ_TRANSIENT_RETRIES + 1):
-                try:
-                    response = client.chat.completions.create(
-                        model=mod,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        timeout=12.0
-                    )
-                    choice = response.choices[0] if response and response.choices else None
-                    # Some NVIDIA models (e.g. nemotron) may return content in
-                    # reasoning_content when standard content is empty.
-                    content = None
-                    if choice:
-                        msg = choice.message
-                        raw_content = getattr(msg, "content", None) or ""
-                        # Strip thinking from content immediately
-                        content = strip_thinking_process(raw_content).strip() if raw_content else None
-                    finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                    if content:
-                        return content, mod, finish_reason
-                    # Empty response — skip this model this time but do NOT permanently blacklist
-                    logger.warning(f"{provider_name.capitalize()} model '{mod}' returned empty content. Skipping.")
-                    break
-                except Exception as e:
-                    last_error = e
-                    if is_fatal_model_error(e):
-                        _DEAD_MODELS.add((provider_name, mod))
-                        logger.warning(
-                            f"{provider_name.capitalize()} model '{mod}' gone/decommissioned (410/404). Marked dead."
-                        )
-                        break
-
-                    # If model timed out (>12s), failover immediately to next model without wasting more time
-                    err_txt = str(e).lower()
-                    if "timed out" in err_txt or "timeout" in err_txt:
-                        logger.warning(f"{provider_name.capitalize()} model '{mod}' timed out after 12s. Fast-failing to next candidate.")
-                        break
-
-                    should_retry = is_transient_ai_error(e) and attempt < GROQ_TRANSIENT_RETRIES
-                    logger.warning(
-                        f"{provider_name.capitalize()} chat model failed ({mod}, attempt {attempt}/{GROQ_TRANSIENT_RETRIES}): {e}"
-                    )
-                    if should_retry:
-                        time.sleep(GROQ_RETRY_BACKOFF_SEC * attempt)
-                        continue
-                    break
-
-    raise last_error if last_error else RuntimeError("All AI chat models failed.")
-
-groq_chat_with_fallback = ai_chat_with_fallback
-
-def ai_vision_with_fallback(messages, max_tokens=500):
-    """Try vision-capable models across NVIDIA NIM and Groq before failing."""
-    if not nvidia_client and not groq_client:
-        raise RuntimeError("No AI client configured for vision. Set NVIDIA_API_KEY or GROQ_API_KEY.")
-
-    providers = []
-    if AI_PROVIDER == "nvidia":
-        if nvidia_client:
-            providers.append(("nvidia", nvidia_client))
-        if groq_client:
-            providers.append(("groq", groq_client))
-    else:
-        if groq_client:
-            providers.append(("groq", groq_client))
-        if nvidia_client:
-            providers.append(("nvidia", nvidia_client))
+    # NVIDIA NIM waterfall — ordered best → fastest (all verified Nov 2026)
+    _raw_candidates = [
+        model if (model and "/" in model) else None,
+        CHAT_MODEL if "/" in CHAT_MODEL else None,
+        "meta/llama-3.3-70b-instruct",
+        "meta/llama-3.1-70b-instruct",
+        "meta/llama-3.1-8b-instruct",
+        "meta/llama-3.2-3b-instruct",
+        "mistralai/mistral-nemo-12b-instruct",
+        "mistralai/mistral-7b-instruct-v0.3",
+        "google/gemma-3-12b-it",
+        "google/gemma-3-4b-it",
+        "microsoft/phi-3-mini-128k-instruct",
+        "meta/llama-3.2-1b-instruct",
+        CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
+    ]
+    seen = set()
+    models = [m for m in _raw_candidates
+              if m and m not in seen and not seen.add(m)
+              and ("nvidia", m) not in _DEAD_MODELS]
 
     last_error = None
-    for provider_name, client in providers:
-        if provider_name == "nvidia":
-            candidates = [
-                VISION_MODEL if "/" in VISION_MODEL else None,
-                "nvidia/nemotron-3.5-super-vl-120b-a12b",
-                "meta/llama-3.2-11b-vision-instruct",
-                VISION_MODEL_FALLBACK if "/" in VISION_MODEL_FALLBACK else None,
-                "meta/llama-3.2-90b-vision-instruct",
-            ]
-        else:
-            candidates = [
-                VISION_MODEL if "/" not in VISION_MODEL else None,
-                VISION_MODEL_FALLBACK if "/" not in VISION_MODEL_FALLBACK else None,
-                "llama-3.2-11b-vision-preview",
-                "llama-3.2-90b-vision-preview",
-            ]
-
-        models = []
-        for m in candidates:
-            if m and (provider_name, m) not in _DEAD_MODELS and m not in models:
-                models.append(m)
-
-        for mod in models:
+    for mod in models:
+        for attempt in range(1, AI_TRANSIENT_RETRIES + 1):
             try:
-                response = client.chat.completions.create(
+                response = nvidia_client.chat.completions.create(
                     model=mod,
                     messages=messages,
-                    max_tokens=max_tokens
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=15.0
                 )
-                raw_c = response.choices[0].message.content if response and response.choices else None
-                content = strip_thinking_process(raw_c) if raw_c else None
+                choice = response.choices[0] if response and response.choices else None
+                content = None
+                if choice:
+                    raw_content = getattr(choice.message, "content", None) or ""
+                    content = strip_thinking_process(raw_content).strip() if raw_content else None
+                finish_reason = getattr(choice, "finish_reason", None) if choice else None
                 if content:
-                    return content, mod
-                raise RuntimeError(f"Empty vision response from {provider_name} model: {mod}")
+                    return content, mod, finish_reason
+                logger.warning(f"NVIDIA model '{mod}' returned empty content. Skipping.")
+                break
             except Exception as e:
                 last_error = e
                 if is_fatal_model_error(e):
-                    _DEAD_MODELS.add((provider_name, mod))
-                logger.warning(f"{provider_name.capitalize()} vision model failed ({mod}): {e}")
+                    _DEAD_MODELS.add(("nvidia", mod))
+                    logger.warning(f"NVIDIA model '{mod}' fatal (404/410). Marked dead.")
+                    break
+                err_txt = str(e).lower()
+                if "timed out" in err_txt or "timeout" in err_txt:
+                    logger.warning(f"NVIDIA model '{mod}' timed out. Trying next.")
+                    break
+                should_retry = is_transient_ai_error(e) and attempt < AI_TRANSIENT_RETRIES
+                logger.warning(f"NVIDIA model failed ({mod}, attempt {attempt}): {e}")
+                if should_retry:
+                    time.sleep(AI_RETRY_BACKOFF_SEC * attempt)
+                    continue
+                break
 
-    raise last_error if last_error else RuntimeError("All AI vision models failed.")
+    raise last_error if last_error else RuntimeError("All NVIDIA NIM models failed. Check NVIDIA_API_KEY.")
+
+groq_chat_with_fallback = ai_chat_with_fallback  # alias kept for compatibility
+
+def ai_vision_with_fallback(messages, max_tokens=500):
+    """NVIDIA NIM vision-capable model waterfall."""
+    if not nvidia_client:
+        raise RuntimeError("No AI client configured for vision. Set NVIDIA_API_KEY.")
+
+    candidates = [
+        VISION_MODEL if "/" in VISION_MODEL else None,
+        "meta/llama-3.2-11b-vision-instruct",
+        "meta/llama-3.2-90b-vision-instruct",
+        VISION_MODEL_FALLBACK if "/" in VISION_MODEL_FALLBACK else None,
+    ]
+    seen = set()
+    models = [m for m in candidates
+              if m and m not in seen and not seen.add(m)
+              and ("nvidia", m) not in _DEAD_MODELS]
+
+    last_error = None
+    for mod in models:
+        try:
+            response = nvidia_client.chat.completions.create(
+                model=mod, messages=messages, max_tokens=max_tokens, timeout=15.0
+            )
+            raw_c = response.choices[0].message.content if response and response.choices else None
+            content = strip_thinking_process(raw_c) if raw_c else None
+            if content:
+                return content, mod
+            raise RuntimeError(f"Empty vision response from model: {mod}")
+        except Exception as e:
+            last_error = e
+            if is_fatal_model_error(e):
+                _DEAD_MODELS.add(("nvidia", mod))
+            logger.warning(f"NVIDIA vision model failed ({mod}): {e}")
+
+    raise last_error if last_error else RuntimeError("All NVIDIA vision models failed.")
 
 groq_vision_with_fallback = ai_vision_with_fallback
 

@@ -117,7 +117,8 @@ NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_KEY") or os.ge
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 HF_KEY = os.getenv("HF_API_KEY")
 
-DEFAULT_AI_PROVIDER = "nvidia" if NVIDIA_API_KEY else "groq"
+# Default AI provider: prefer Groq for ultra-low latency if key is provided, else NVIDIA NIM
+DEFAULT_AI_PROVIDER = "groq" if GROQ_KEY else ("nvidia" if NVIDIA_API_KEY else "groq")
 AI_PROVIDER = (os.getenv("AI_PROVIDER") or DEFAULT_AI_PROVIDER).strip().lower()
 
 def normalize_chat_model(model, default):
@@ -125,15 +126,15 @@ def normalize_chat_model(model, default):
     return configured
 
 if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
-    DEFAULT_CHAT_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
-    DEFAULT_CHAT_FALLBACK = "mistralai/mistral-large-2-instruct"
-    DEFAULT_CHAT_CURRENT = "deepseek-ai/deepseek-v4.1-flash"
+    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
+    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-8b-instruct"
+    DEFAULT_CHAT_CURRENT = "meta/llama-3.1-70b-instruct"
     DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
     DEFAULT_VISION_FALLBACK = "meta/llama-3.2-90b-vision-instruct"
 else:
     DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
     DEFAULT_CHAT_FALLBACK = "llama-3.1-8b-instant"
-    DEFAULT_CHAT_CURRENT = "qwen/qwen3.6-27b"
+    DEFAULT_CHAT_CURRENT = "llama-3.1-8b-instant"
     DEFAULT_VISION_MODEL = "llama-3.2-11b-vision-preview"
     DEFAULT_VISION_FALLBACK = "llama-3.2-90b-vision-preview"
 
@@ -192,7 +193,7 @@ bot = None
 if NVIDIA_API_KEY:
     if OpenAI:
         try:
-            nvidia_client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY)
+            nvidia_client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY, timeout=20.0)
             print("✅ NVIDIA NIM client initialized successfully.")
         except Exception as e:
             print(f"⚠️ NVIDIA NIM client init warning: {e}")
@@ -205,7 +206,7 @@ if NVIDIA_API_KEY:
 if GROQ_KEY:
     if Groq:
         try:
-            groq_client = Groq(api_key=GROQ_KEY)
+            groq_client = Groq(api_key=GROQ_KEY, timeout=20.0)
             print("✅ Groq client initialized successfully.")
         except Exception as e:
             print(f"⚠️ Groq client init warning: {e}")
@@ -220,7 +221,7 @@ if not nvidia_client and not groq_client:
 
 if BOT_TOKEN:
     try:
-        bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+        bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown", num_threads=8)
     except Exception as e:
         print(f"⚠️ Telegram bot init warning: {e}")
         logger = logging.getLogger(__name__)
@@ -1554,6 +1555,8 @@ def _broadcast_payload_to_users(payload, button_text=None, button_url=None):
             failed += 1
     return delivered, failed
 
+_DEAD_MODELS = set()
+
 def is_transient_groq_error(exc: Exception) -> bool:
     txt = str(exc or "").lower()
     transient_markers = [
@@ -1563,10 +1566,15 @@ def is_transient_groq_error(exc: Exception) -> bool:
     ]
     return any(marker in txt for marker in transient_markers)
 
+def is_fatal_model_error(exc: Exception) -> bool:
+    txt = str(exc or "").lower()
+    status_code = getattr(exc, "status_code", None)
+    return status_code in {404, 410} or any(marker in txt for marker in ["404", "not found", "decommissioned", "not available", "unsupported model"])
+
 is_transient_ai_error = is_transient_groq_error
 
 def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
-    """Try primary and fallback chat models across NVIDIA NIM and Groq before failing."""
+    """Try primary and fallback chat models across Groq and NVIDIA NIM before failing."""
     if not nvidia_client and not groq_client:
         raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
 
@@ -1588,12 +1596,10 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
-                "nvidia/llama-3.1-nemotron-70b-instruct",
-                "mistralai/mistral-large-2-instruct",
-                "deepseek-ai/deepseek-v4.1-flash",
-                "google/gemma-3-12b-it",
-                "nvidia/llama-3.1-nemotron-51b-instruct",
-                "meta/llama-3.2-11b-vision-instruct",
+                "meta/llama-3.3-70b-instruct",
+                "meta/llama-3.1-8b-instruct",
+                "meta/llama-3.1-70b-instruct",
+                CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
             ]
         else:
             candidates = [
@@ -1601,16 +1607,13 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                 CHAT_MODEL if "/" not in CHAT_MODEL else None,
                 "llama-3.3-70b-versatile",
                 "llama-3.1-8b-instant",
-                "openai/gpt-oss-120b",
-                "openai/gpt-oss-20b",
                 CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
-                "qwen/qwen3.6-27b",
             ]
 
         models = []
         for m in candidates:
-            if m and m not in models:
+            if m and (provider_name, m) not in _DEAD_MODELS and m not in models:
                 models.append(m)
 
         for mod in models:
@@ -1630,6 +1633,13 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                     raise RuntimeError(f"Empty response content from {provider_name} model: {mod}")
                 except Exception as e:
                     last_error = e
+                    if is_fatal_model_error(e):
+                        _DEAD_MODELS.add((provider_name, mod))
+                        logger.warning(
+                            f"{provider_name.capitalize()} model '{mod}' is invalid or decommissioned (Error: {e}). Marked dead."
+                        )
+                        break
+
                     should_retry = is_transient_ai_error(e) and attempt < GROQ_TRANSIENT_RETRIES
                     logger.warning(
                         f"{provider_name.capitalize()} chat model failed ({mod}, attempt {attempt}/{GROQ_TRANSIENT_RETRIES}): {e}"
@@ -1675,12 +1685,11 @@ def ai_vision_with_fallback(messages, max_tokens=500):
                 VISION_MODEL_FALLBACK if "/" not in VISION_MODEL_FALLBACK else None,
                 "llama-3.2-11b-vision-preview",
                 "llama-3.2-90b-vision-preview",
-                "meta-llama/llama-4-scout-17b-16e-instruct",
             ]
 
         models = []
         for m in candidates:
-            if m and m not in models:
+            if m and (provider_name, m) not in _DEAD_MODELS and m not in models:
                 models.append(m)
 
         for mod in models:
@@ -1696,6 +1705,8 @@ def ai_vision_with_fallback(messages, max_tokens=500):
                 raise RuntimeError(f"Empty vision response from {provider_name} model: {mod}")
             except Exception as e:
                 last_error = e
+                if is_fatal_model_error(e):
+                    _DEAD_MODELS.add((provider_name, mod))
                 logger.warning(f"{provider_name.capitalize()} vision model failed ({mod}): {e}")
 
     raise last_error if last_error else RuntimeError("All AI vision models failed.")
@@ -1860,14 +1871,8 @@ class ImageGenerator:
 def play_intro_animation(chat_id):
     """Render a red-branded Telegram-friendly boot animation."""
     frames = [
-        "```text\n[ ARTOVIX RED CORE ]\nPowering on...\n```",
-        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [##--------] 20%\n```",
-        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [####------] 40%\n```",
-        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [######----] 60%\n```",
-        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [########--] 80%\n```",
-        "```text\n[ ARTOVIX RED CORE ]\nLoading interface [##########] 100%\n```",
-        "```text\nModules online:\nChat          [READY]\nImage Studio  [READY]\nCode Assist   [READY]\nVision        [READY]\n```",
-        "```text\nFinal checks...\nSecurity gate [OK]\nPerformance   [OPTIMAL]\nSession       [ACTIVE]\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nPowering on... [#####-----] 50%\n```",
+        "```text\n[ ARTOVIX RED CORE ]\nModules online [##########] 100%\nChat [READY] | Code [READY] | Vision [READY]\n```",
         "🔴 *ARTOVIX RED READY*\n✅ Welcome sequence complete."
     ]
 
@@ -1883,7 +1888,7 @@ def play_intro_animation(chat_id):
                     message_id=msg.message_id,
                     parse_mode="Markdown"
                 )
-            time.sleep(0.38 if i < len(frames) - 1 else 0.2)
+            time.sleep(0.12 if i < len(frames) - 1 else 0.05)
         except Exception:
             # Keep /start resilient; intro animation should never block bot usage.
             break

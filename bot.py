@@ -1591,24 +1591,23 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             providers.append(("nvidia", nvidia_client))
 
     last_error = None
+    # Track empty-response counts per model so we blacklist them too
+    _empty_counts = {}
     for provider_name, client in providers:
         if provider_name == "nvidia":
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
-                # Active NVIDIA NIM models (verified Nov 2026)
+                # Active NVIDIA NIM models with free tier (Nov 2026)
                 "meta/llama-3.3-70b-instruct",
                 "meta/llama-3.1-70b-instruct",
                 "meta/llama-3.1-8b-instruct",
-                "mistralai/mistral-nemo-12b-instruct",
-                "mistralai/mixtral-8x22b-instruct-v0.1",
-                "nvidia/nemotron-3.5-lightning-30b-a3b",
-                "deepseek-ai/deepseek-r1",
-                "deepseek-ai/deepseek-v3",
-                "google/gemma-3-27b-it",
-                "google/gemma-3-12b-it",
                 "meta/llama-3.2-3b-instruct",
                 "meta/llama-3.2-1b-instruct",
+                "mistralai/mistral-nemo-12b-instruct",
+                "mistralai/mistral-7b-instruct-v0.3",
+                "google/gemma-3-12b-it",
+                "microsoft/phi-3-mini-128k-instruct",
                 CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
             ]
         else:
@@ -1620,6 +1619,8 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                 "llama-3.1-70b-versatile",
                 "gemma2-9b-it",
                 "mixtral-8x7b-32768",
+                "llama3-70b-8192",
+                "llama3-8b-8192",
                 CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
             ]
@@ -1641,15 +1642,20 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                     choice = response.choices[0] if response and response.choices else None
                     content = choice.message.content if choice else None
                     finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                    if content:
+                    if content and content.strip():
                         return content, mod, finish_reason
+                    # Empty response — blacklist this model immediately
+                    key = (provider_name, mod)
+                    _empty_counts[key] = _empty_counts.get(key, 0) + 1
+                    if _empty_counts[key] >= 1:
+                        _DEAD_MODELS.add(key)
                     raise RuntimeError(f"Empty response content from {provider_name} model: {mod}")
                 except Exception as e:
                     last_error = e
                     if is_fatal_model_error(e):
                         _DEAD_MODELS.add((provider_name, mod))
                         logger.warning(
-                            f"{provider_name.capitalize()} model '{mod}' is invalid or decommissioned (Error: {e}). Marked dead."
+                            f"{provider_name.capitalize()} model '{mod}' gone/decommissioned (410/404). Marked dead."
                         )
                         break
 
@@ -3543,7 +3549,12 @@ def handle_all_messages(message):
             try:
                 err = str(api_error).lower()
                 status_code = getattr(api_error, "status_code", None)
-                if status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
+                if status_code == 410 or any(term in err for term in ("410", "gone", "decommissioned")):
+                    user_msg = (
+                        "🔑 *NVIDIA API credits exhausted.*\n\n"
+                        "Please get a free **Groq API key** at console.groq.com and add it as `GROQ_API_KEY` in your Render dashboard."
+                    )
+                elif status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
                     user_msg = (
                         "⏳ *Too many requests right now.*\n\n"
                         "Please wait 10-20 seconds and try again."

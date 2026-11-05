@@ -133,11 +133,11 @@ def normalize_chat_model(model, default):
     return configured
 
 if NVIDIA_API_KEY and (AI_PROVIDER == "nvidia" or not GROQ_KEY):
-    DEFAULT_CHAT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
-    DEFAULT_CHAT_FALLBACK = "meta/llama-3.3-70b-instruct"
+    DEFAULT_CHAT_MODEL = "meta/llama-3.3-70b-instruct"
+    DEFAULT_CHAT_FALLBACK = "meta/llama-3.1-70b-instruct"
     DEFAULT_CHAT_CURRENT = "meta/llama-3.1-8b-instruct"
-    DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
-    DEFAULT_VISION_FALLBACK = "meta/llama-3.2-90b-vision-instruct"
+    DEFAULT_VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    DEFAULT_VISION_FALLBACK = "meta/llama-3.2-11b-vision-instruct"
 else:
     DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
     DEFAULT_CHAT_FALLBACK = "llama-3.1-8b-instant"
@@ -571,13 +571,23 @@ GUIDELINES:
 3. Provide rich, highly useful, and accurate answers with practical examples or steps.
 4. When helping with code, always give clean, working, copyable code blocks with explanations.
 5. If the user wants fun, jokes, games, stickers, or emoji art, be playful, witty, and delight them!
-6. ABSOLUTE RULE: NEVER output "Here's a thinking process:", "Thinking Process:", "<think>", or internal step-by-step analysis.
-7. Start your response IMMEDIATELY with your direct conversational answer to the user.
 
 RESPONSE FORMAT:
 - Use clean GitHub-style Markdown with clear headings and bullet points
 - Add pleasant emojis to highlight sections and key takeaways
 - Keep the tone helpful, vibrant, inspiring, and always friendly!
+
+!!!!!!! CRITICAL — THESE ARE ABSOLUTE HARD RULES — NEVER BREAK THEM !!!!!!!
+⛔ NEVER output "Here's a thinking process:", "Thinking Process:", "<think>", or any internal step-by-step reasoning.
+⛔ NEVER output lines like "User said X in Y language, so I'll reply in Y."
+⛔ NEVER output lines like "Analyzing User Input:", "Identify Persona:", "Check Guidelines:", "Formulate Response:".
+⛔ NEVER label your reasoning steps with numbers or bullets like "1. Analyze ...", "2. Identify ...".
+⛔ NEVER describe what you are going to do — just DO IT.
+⛔ NEVER reference the system prompt, persona rules, or internal guidelines in your reply.
+⛔ DO all thinking silently and invisibly — your output MUST start IMMEDIATELY with the actual conversational reply.
+✅ CORRECT: Start directly with "Hey there! 🌟 ..." or the actual answer.
+✅ WRONG: "User said hi. I'll analyze: 1. Identify persona ... 2. Formulate ..."
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 Remember: You are here to brighten the user's day and solve any problem with mastery! ✨🚀"""
 
@@ -585,26 +595,34 @@ Remember: You are here to brighten the user's day and solve any problem with mas
 # 🛠️ UTILITY FUNCTIONS
 # ============================================================================
 def strip_thinking_process(text):
-    """Strip out leaked internal chain-of-thought or thinking blocks from reasoning models."""
+    """Strip out leaked internal chain-of-thought or thinking blocks from reasoning models.
+    
+    Catches:
+    - <think>...</think> XML blocks
+    - 'Here's a thinking process:' and similar headers
+    - Step-by-step analysis blocks (1. Analyze..., 2. Identify..., 3. Formulate...)
+    - Meta-reasoning and internal monologues (e.g., 'User said "hi", so I'll reply in English',
+      'Need to start immediately with...', 'Let's make sure I don't output...', 'guidelines say...',
+      'Wait, I need to figure out...', 'Looking at the conversation...')
+    """
     if not text:
         return text
 
     cleaned = text.strip()
 
-    # 0. Remove [Part N/M] prefix lines added before stripping (they appear in multi-chunk paths)
+    # 0. Remove [Part N/M] prefix lines added in multi-chunk paths
     cleaned = re.sub(r'^\[Part\s+\d+/\d+\]\s*\n?', '', cleaned).strip()
 
-    # 1. Remove <think>...</think> blocks (may span entire response)
+    # 1. Remove <think>...</think> blocks
     cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned, flags=re.IGNORECASE).strip()
     if '<think>' in cleaned.lower():
-        parts = re.split(r'</think>', cleaned, flags=re.IGNORECASE)
-        if len(parts) > 1:
-            cleaned = parts[-1].strip()
+        parts_split = re.split(r'</think>', cleaned, flags=re.IGNORECASE)
+        if len(parts_split) > 1:
+            cleaned = parts_split[-1].strip()
         else:
             cleaned = re.sub(r'<think>[\s\S]*', '', cleaned, flags=re.IGNORECASE).strip()
 
-    # 2. Broad catch: if the entire text is a chain-of-thought dump (numbered steps, no real reply)
-    #    patterns that signal pure thinking output with no actual user-facing reply
+    # 2. Check for explicit thinking headers
     THINKING_HEADERS = re.compile(
         r"(?:^|\n)\s*(?:"
         r"Here'?s\s+(?:a\s+)?(?:my\s+)?thinking\s+process\b[:\s]*"
@@ -617,51 +635,52 @@ def strip_thinking_process(text):
         r")",
         re.IGNORECASE
     )
-
     header_match = THINKING_HEADERS.search(cleaned)
     if header_match:
         before = cleaned[:header_match.start()].strip()
-        # Strip the colon/whitespace that may follow the header keyword
         after_header = re.sub(r'^[:\s]+', '', cleaned[header_match.end():]).strip()
-
-        # Try to find the actual reply after a horizontal divider (--- or ***)
         divider_split = re.split(r'\n(?:\-{3,}|\*{3,}|_{3,})\s*\n', after_header, maxsplit=1)
         if len(divider_split) > 1 and divider_split[1].strip():
-            cleaned = (before + "\n\n" + divider_split[1].strip()).strip()
+            cleaned = (before + "\n\n" + divider_split[1].strip()).strip() if before else divider_split[1].strip()
         else:
-            # Walk paragraphs: skip numbered/bulleted thought steps, keep first non-thought para
-            paras = after_header.split("\n\n")
-            actual_reply = []
-            capturing = False
-            for p in paras:
-                p_str = p.strip()
-                is_thought = bool(
-                    re.match(r'^\d+[\.\)]\s+(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review|Consider|Note|Remember|Output|Input|Format|Tone|Persona|Role|Goal)', p_str, re.IGNORECASE)
-                    or re.match(r'^[\-\*]\s+', p_str)
-                    or re.match(r'^(?:Tone|Audience|Goal|Language|Constraints|Safety|Persona|Guidelines|Format|Output|Input)\s*:', p_str, re.IGNORECASE)
-                    or re.search(r'thinking\s+process|chain.of.thought|internal\s+reasoning', p_str, re.IGNORECASE)
-                )
-                if capturing:
-                    actual_reply.append(p)
-                elif not is_thought and p_str:
-                    capturing = True
-                    actual_reply.append(p)
+            cleaned = (before + "\n\n" + after_header).strip() if before else after_header
 
-            if actual_reply:
-                reply_text = "\n\n".join(actual_reply).strip()
-                cleaned = (before + "\n\n" + reply_text).strip() if before else reply_text
-            elif before:
-                cleaned = before
-            else:
-                cleaned = "Hello there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
+    # 3. Detect and filter paragraph-level meta-reasoning/monologues
+    META_REASONING_PATTERNS = [
+        r'^\s*User\s+(?:said|says|asked|typed|sent)\s+["\'].*?["\']\s+in\s+\w+',
+        r'^\s*\d+[\.\)]\s*(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review|Consider|Note|Remember|Output|Input|Format|Tone|Persona|Role|Goal)',
+        r'^\s*(?:Structure|Example|Guidelines|Personality|Persona|Constraints|Safety|Tone|Audience|Goal|Language|Format|Output|Input)\s*:\s*(?:Maybe|Need|Should|Could|I\'ll|Let|The|Keep|Use|Start|A\s+)',
+        r'^\s*(?:Need\s+to\s+start|Let\'s\s+make\s+sure|I\'ll\s+do\s+something|I\'ll\s+just\s+output|I\s+need\s+to\s+output|I\s+should\s+reply)',
+        r'^\s*(?:Wait,?\s+I\s+need\s+to|Looking\s+at\s+the\s+conversation|Actually,?\s+re[\-\s]reading|Actually,?\s+looking|So\s+I\s+must\s+have\s+messed\s+up)',
+        r'^\s*(?:But\s+guidelines\s+say|Per\s+guidelines|According\s+to\s+(?:my\s+)?guidelines|The\s+system\s+prompt\s+says)',
+        r'^\s*(?:Since\s+it\'s\s+just\s+a\s+["\']?hi["\']?,?\s+maybe\s+I\s+can)',
+        r'^\s*I\s+think\s+what\s+happened\s+is\s*:',
+        r'^\s*I\s+think\s+the\s+intent\s+is\s*:',
+    ]
+    meta_regex = re.compile('|'.join(f'(?:{p})' for p in META_REASONING_PATTERNS), re.IGNORECASE)
 
-    # 3. Final safety: if output is still suspiciously just a numbered outline with no conversational text
-    #    (more than 5 numbered items and no sentence ending with ? or !) — replace with fallback
-    lines = cleaned.splitlines()
-    numbered = sum(1 for ln in lines if re.match(r'^\s*\d+[\.\)]\s+', ln))
-    has_reply = bool(re.search(r'[a-z]{10,}', cleaned, re.IGNORECASE))  # at least 10 consecutive letters
-    if numbered >= 5 and not has_reply:
-        cleaned = "Hey there! 😊✨ How can I help you today? 🚀"
+    # Split into paragraphs
+    paras = cleaned.split("\n\n")
+    clean_paras = []
+    for p in paras:
+        p_strip = p.strip()
+        if not p_strip:
+            continue
+        first_line = p_strip.splitlines()[0].strip()
+        if meta_regex.search(first_line) or meta_regex.search(p_strip):
+            continue
+        if re.match(r'^\s*(?:Structure|Example|Wait|Note|Tip|Idea)\s*:', p_strip, re.IGNORECASE) and not clean_paras:
+            continue
+        clean_paras.append(p_strip)
+
+    if clean_paras:
+        cleaned = "\n\n".join(clean_paras).strip()
+    else:
+        cleaned = "Hey there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
+
+    # 4. Final safety check: if meta-thinking strings still survived
+    if re.search(r'(?:guidelines\s+say|Formulate\s+Response|Analyze\s+User\s+Input|Identify\s+the\s+Core\s+Task|thinking\s+process)', cleaned, re.IGNORECASE):
+        cleaned = "Hey there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
 
     return cleaned
 
@@ -1015,9 +1034,9 @@ NVIDIA_FEATURED_MODELS = {
     },
     "auto": {
         "id": None,
-        "name": "Auto (Smart Selection)",
-        "badge": "🔄 Dynamic Failover",
-        "desc": "Automatically routes to the best available model with seamless fallback.",
+        "name": "Auto (Smart Purpose Routing)",
+        "badge": "🎯 Right Model Per Task",
+        "desc": "Routes Chat -> Llama 3.3 70B, Code -> Nemotron Super VL, Search -> Nemotron Ultra 1M, Vision -> Super VL.",
         "params": "Dynamic"
     }
 }
@@ -1032,6 +1051,39 @@ def get_user_chat_model(user_id):
     if info and info.get("id"):
         return info["id"]
     return None
+
+def get_purpose_model(purpose="chat", user_id=None):
+    """
+    Select the optimal AI model for the specified purpose:
+    - If user explicitly picked a model via /model (and not 'auto'), respect their preference!
+    - Otherwise in 'auto' mode, route to the right model for the right purpose:
+      * 'chat': meta/llama-3.3-70b-instruct (conversational masterpiece, warm, witty, emojis)
+      * 'code': nvidia/nemotron-3.5-super-vl-120b-a12b (expert reasoning, coding, tool-calling)
+      * 'search': nvidia/nemotron-3-ultra-550b-a55b (1M context, planning, deep research)
+      * 'vision': nvidia/nemotron-3.5-super-vl-120b-a12b (native multimodal vision)
+      * 'agent': nvidia/nemotron-3.5-lightning-30b-a3b (fast 30B agentic tasks)
+    """
+    if user_id:
+        user_pick = get_user_chat_model(user_id)
+        if user_pick:
+            return user_pick
+
+    if AI_PROVIDER == "nvidia" or (NVIDIA_API_KEY and not GROQ_KEY):
+        p = (purpose or "chat").lower().strip()
+        if p in {"code", "coding", "program", "debug"}:
+            return "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        elif p in {"search", "find", "research", "doc", "askdoc"}:
+            return "nvidia/nemotron-3-ultra-550b-a55b"
+        elif p in {"vision", "image", "photo"}:
+            return "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        elif p in {"agent", "tool", "sticker", "task"}:
+            return "nvidia/nemotron-3.5-lightning-30b-a3b"
+        else:  # "chat", "general", greetings
+            return "meta/llama-3.3-70b-instruct"
+    else:
+        if purpose == "vision":
+            return "llama-3.2-11b-vision-preview"
+        return "llama-3.3-70b-versatile"
 
 def set_user_chat_model(user_id, model_key):
     k = str(model_key).lower().strip()
@@ -1182,7 +1234,7 @@ def ask_ai_text(user_id, prompt, temperature=0.5):
         ],
         temperature=temperature,
         max_tokens=get_response_max_tokens(user_id),
-        model=get_user_chat_model(user_id),
+        model=get_purpose_model("chat", user_id),
     )
     return clean_markdown(part or "")
 
@@ -1820,20 +1872,20 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
     for provider_name, client in providers:
         if provider_name == "nvidia":
             featured_nims = [
-                "nvidia/nemotron-3.5-lightning-30b-a3b",
                 "nvidia/nemotron-3.5-super-vl-120b-a12b",
                 "deepseek-ai/deepseek-v4.1-flash",
                 "deepseek/deepseek-v4.1-flash",
                 "nvidia/nemotron-3-ultra-550b-a55b",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
             ]
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
-                *featured_nims,
-                # Broad NVIDIA NIM fallbacks (Nov 2026)
                 "meta/llama-3.3-70b-instruct",
                 "meta/llama-3.1-70b-instruct",
                 "meta/llama-3.1-8b-instruct",
+                *featured_nims,
+                # Broad NVIDIA NIM fallbacks (Nov 2026)
                 "meta/llama-3.2-3b-instruct",
                 "meta/llama-3.2-1b-instruct",
                 "mistralai/mistral-nemo-12b-instruct",
@@ -1879,11 +1931,9 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                     content = None
                     if choice:
                         msg = choice.message
-                        content = getattr(msg, "content", None) or ""
-                        if not content.strip():
-                            # Try reasoning_content fallback for thinking models
-                            content = getattr(msg, "reasoning_content", None) or ""
-                        content = content.strip() or None
+                        raw_content = getattr(msg, "content", None) or ""
+                        # Strip thinking from content immediately
+                        content = strip_thinking_process(raw_content).strip() if raw_content else None
                     finish_reason = getattr(choice, "finish_reason", None) if choice else None
                     if content:
                         return content, mod, finish_reason
@@ -1959,7 +2009,8 @@ def ai_vision_with_fallback(messages, max_tokens=500):
                     messages=messages,
                     max_tokens=max_tokens
                 )
-                content = response.choices[0].message.content if response and response.choices else None
+                raw_c = response.choices[0].message.content if response and response.choices else None
+                content = strip_thinking_process(raw_c) if raw_c else None
                 if content:
                     return content, mod
                 raise RuntimeError(f"Empty vision response from {provider_name} model: {mod}")
@@ -2889,11 +2940,12 @@ def handle_search(message):
                 safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable search features.")
                 return
 
-            # Get response from AI backend
+            # Get response from AI backend using dedicated search/research model
             content, _, _ = ai_chat_with_fallback(
                 messages=[{"role": "user", "content": search_prompt}],
                 temperature=0.7,
-                max_tokens=500
+                max_tokens=600,
+                model=get_purpose_model("search", message.chat.id)
             )
 
             answer = clean_markdown(content)
@@ -2993,7 +3045,8 @@ OUTPUT FORMAT RULES:
             content, _, _ = ai_chat_with_fallback(
                 messages=[{"role": "user", "content": code_prompt}],
                 temperature=0.3,
-                max_tokens=600
+                max_tokens=700,
+                model=get_purpose_model("code", message.chat.id)
             )
 
             preferred_language = detect_code_language(code_text)
@@ -3554,7 +3607,8 @@ def handle_askdoc(message):
         content, _, _ = ai_chat_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=700
+            max_tokens=700,
+            model=get_purpose_model("search", message.chat.id)
         )
         answer = clean_markdown(content)
         final_text = f"📄 *Doc Answer ({doc_name}):*\n\n{answer}"
@@ -4495,26 +4549,44 @@ def handle_all_messages(message):
             used_model = None
             max_tokens_for_user = get_response_max_tokens(message.chat.id)
 
-            selected_model = get_user_chat_model(message.chat.id)
+            # Auto-detect if user prompt is a programming/coding task to route to best model
+            user_text_low = (message.text or "").lower()
+            is_coding = bool(
+                "```" in (message.text or "")
+                or any(kw in user_text_low for kw in [
+                    "python", "javascript", "typescript", "write code", "fix code",
+                    "debug", "syntax error", "traceback", "sql query", "function",
+                    "algorithm", "regex", "c++", "rust", "golang", "html/css"
+                ])
+            )
+            chat_purpose = "code" if is_coding else "chat"
+            selected_model = get_purpose_model(chat_purpose, message.chat.id)
 
-            # Auto-continue if model stops due to token limit.
-            for _ in range(3):
-                part, used_model, finish_reason = groq_chat_with_fallback(
+            part, used_model, finish_reason = groq_chat_with_fallback(
+                messages=local_messages,
+                temperature=0.7,
+                max_tokens=max_tokens_for_user,
+                model=selected_model
+            )
+            reply_raw = strip_thinking_process(part.strip()) if part else ""
+
+            # Only auto-continue if response was legitimately truncated by token limit and is substantial
+            if finish_reason == "length" and reply_raw and len(reply_raw) > 200:
+                local_messages.append({"role": "assistant", "content": reply_raw})
+                local_messages.append({
+                    "role": "user",
+                    "content": "Please continue seamlessly."
+                })
+                cont_part, _, _ = groq_chat_with_fallback(
                     messages=local_messages,
                     temperature=0.7,
                     max_tokens=max_tokens_for_user,
                     model=selected_model
                 )
-                reply_parts.append(part.strip())
-                if finish_reason != "length":
-                    break
-                local_messages.append({"role": "assistant", "content": part})
-                local_messages.append({
-                    "role": "user",
-                    "content": "Continue exactly from where you stopped. Do not repeat previous text."
-                })
+                if cont_part:
+                    cont_clean = strip_thinking_process(cont_part.strip())
+                    reply_raw = f"{reply_raw}\n\n{cont_clean}".strip()
 
-            reply_raw = "\n".join(p for p in reply_parts if p)
             reply = clean_markdown(reply_raw)
             
             # Save to memory

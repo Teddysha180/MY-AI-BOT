@@ -1951,19 +1951,22 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
 
         return None  # provider exhausted
 
-    # ── Phase 1: NVIDIA ───────────────────────────────────────────────────────
+    # ── NVIDIA only (Groq removed — no GROQ_API_KEY in Render) ───────────────
     if nvidia_client:
         nvidia_candidates = [
             model if (model and "/" in model) else None,
             CHAT_MODEL if "/" in CHAT_MODEL else None,
+            # Largest → smallest for best quality first, tiny models as last resort
             "meta/llama-3.3-70b-instruct",
             "meta/llama-3.1-70b-instruct",
             "meta/llama-3.1-8b-instruct",
             "meta/llama-3.2-3b-instruct",
             "mistralai/mistral-nemo-12b-instruct",
             "google/gemma-3-12b-it",
+            "google/gemma-3-4b-it",
             "microsoft/phi-3-mini-128k-instruct",
             "meta/llama-3.2-1b-instruct",
+            "mistralai/mistral-7b-instruct-v0.3",
             CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
         ]
         result = _try_provider("nvidia", nvidia_client, nvidia_candidates)
@@ -4974,28 +4977,29 @@ def handle_all_messages(message):
             try:
                 err = str(api_error).lower()
                 status_code = getattr(api_error, "status_code", None)
-                # All API errors → single friendly message, no technical details to users
+                actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
+
+                # Context too long
                 if status_code == 413 or any(term in err for term in ("context length", "maximum context", "prompt is too long", "request too large")):
-                    user_msg = (
-                        "📝 *That conversation is too long.*\n\n"
-                        "Please use /reset and send the message again."
-                    )
+                    user_msg = "📝 Conversation too long. Use /reset and try again."
+                # Timeout / server error
                 elif status_code in {408, 500, 502, 503, 504} or any(term in err for term in ("timeout", "timed out", "service unavailable", "connection reset")):
                     user_msg = "⚠️ Please try again in a moment."
+                # Credits / quota / auth — admin sees helpful message
+                elif status_code in {401, 402, 403} or any(term in err for term in ("credit", "exhausted", "quota", "unauthorized", "payment", "free limit")):
+                    if actor_id in MAIN_ADMIN_IDS:
+                        user_msg = "🔑 NVIDIA credits exhausted or key issue. Top up at build.nvidia.com → Credits."
+                    else:
+                        user_msg = "⚠️ Please try again in a moment."
                 else:
-                    # All other errors (401, 402, 403, 404, 410, credits, quota, etc.)
-                    # → silent friendly message, no "switching engine", no raw errors
-                    user_msg = "⚠️ Please try again in a moment."
-                # Admin-only: show real error for debugging (plain text, no markdown to avoid parse errors)
-                actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
-                if actor_id in MAIN_ADMIN_IDS:
-                    err_preview = str(api_error)[:400].replace("`", "'").replace("*", "").replace("_", "")
-                    user_msg = f"⚠️ AI Error (admin debug):\n\n{err_preview}"
-                safe_send_message(
-                    message.chat.id,
-                    user_msg,
-                    parse_mode=None
-                )
+                    # Everything else → friendly for users, real error for admin
+                    if actor_id in MAIN_ADMIN_IDS:
+                        err_clean = str(api_error)[:350].replace("`", "'").replace("*", "").replace("_", "")
+                        user_msg = f"⚠️ AI Error (admin):\n{err_clean}"
+                    else:
+                        user_msg = "⚠️ Please try again in a moment."
+
+                safe_send_message(message.chat.id, user_msg, parse_mode=None)
             except Exception:
                 logger.error("Failed to send fallback message after chat error.")
         

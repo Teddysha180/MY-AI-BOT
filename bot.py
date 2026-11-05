@@ -1859,12 +1859,83 @@ def is_fatal_model_error(exc: Exception) -> bool:
 is_transient_ai_error = is_transient_groq_error
 
 def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
-    """NVIDIA NIM primary → Groq silent fallback → all models exhausted."""
+    """NVIDIA NIM primary → Groq silent fallback → clean two-phase, no for..else bugs."""
     if not nvidia_client and not groq_client:
         raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY in Render environment variables.")
 
-    # ── Provider order: NVIDIA first, Groq as silent backup ──────────────────
-    providers = []
+    last_error = None
+
+    # ── Helper: try one provider's model list ─────────────────────────────────
+    def _try_provider(provider_name, client, raw_candidates):
+        nonlocal last_error
+        seen = set()
+        models_to_try = [m for m in raw_candidates
+                         if m and m not in seen and not seen.add(m)
+                         and (provider_name, m) not in _DEAD_MODELS]
+
+        for mod in models_to_try:
+            # Key-level error: skip entire provider immediately
+            if last_error:
+                sc = getattr(last_error, "status_code", None)
+                etxt = str(last_error).lower()
+                if sc in {401, 402, 403} or any(t in etxt for t in ("credit", "exhausted", "quota", "unauthorized", "payment")):
+                    logger.warning(f"{provider_name}: key-level error, skipping remaining models.")
+                    return None
+
+            for attempt in range(1, AI_TRANSIENT_RETRIES + 1):
+                try:
+                    response = client.chat.completions.create(
+                        model=mod,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=20.0
+                    )
+                    choice = response.choices[0] if response and response.choices else None
+                    if choice:
+                        raw_content = getattr(choice.message, "content", None) or ""
+                        content = strip_thinking_process(raw_content).strip() if raw_content else None
+                        if content:
+                            finish_reason = getattr(choice, "finish_reason", None)
+                            logger.info(f"{provider_name} model '{mod}' succeeded.")
+                            return content, mod, finish_reason
+                    logger.warning(f"{provider_name} model '{mod}' returned empty. Skipping.")
+                    break  # try next model
+
+                except Exception as e:
+                    last_error = e
+                    sc = getattr(e, "status_code", None)
+                    etxt = str(e).lower()
+
+                    # Fatal model error (404 / model gone) → mark dead, try next model
+                    if is_fatal_model_error(e):
+                        _DEAD_MODELS.add((provider_name, mod))
+                        logger.warning(f"{provider_name} model '{mod}' fatal ({sc}). Marked dead.")
+                        break  # next model
+
+                    # Key-level error (auth / credits) → abort this provider entirely
+                    if sc in {401, 402, 403} or any(t in etxt for t in ("credit", "exhausted", "quota", "unauthorized", "payment")):
+                        logger.warning(f"{provider_name} key-level error (status {sc}). Moving to next provider.")
+                        return None  # bail out of this provider
+
+                    # Timeout → try next model
+                    if "timed out" in etxt or "timeout" in etxt:
+                        logger.warning(f"{provider_name} model '{mod}' timed out.")
+                        break  # next model
+
+                    # Transient → retry with backoff
+                    if is_transient_ai_error(e) and attempt < AI_TRANSIENT_RETRIES:
+                        logger.warning(f"{provider_name} model '{mod}' transient error, retry {attempt}: {e}")
+                        time.sleep(AI_RETRY_BACKOFF_SEC * attempt)
+                        continue
+
+                    # Other error → try next model
+                    logger.warning(f"{provider_name} model '{mod}' failed (attempt {attempt}): {e}")
+                    break  # next model
+
+        return None  # provider exhausted
+
+    # ── Phase 1: NVIDIA ───────────────────────────────────────────────────────
     if nvidia_client:
         nvidia_candidates = [
             model if (model and "/" in model) else None,
@@ -1874,16 +1945,19 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             "meta/llama-3.1-8b-instruct",
             "meta/llama-3.2-3b-instruct",
             "mistralai/mistral-nemo-12b-instruct",
-            "mistralai/mistral-7b-instruct-v0.3",
             "google/gemma-3-12b-it",
-            "google/gemma-3-4b-it",
             "microsoft/phi-3-mini-128k-instruct",
             "meta/llama-3.2-1b-instruct",
             CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
         ]
-        providers.append(("nvidia", nvidia_client, nvidia_candidates))
+        result = _try_provider("nvidia", nvidia_client, nvidia_candidates)
+        if result:
+            return result
 
+    # ── Phase 2: Groq (silent fallback) ──────────────────────────────────────
     if groq_client:
+        # Reset last_error so Groq key-level check starts fresh
+        last_error = None
         groq_candidates = [
             model if (model and "/" not in model) else None,
             "llama-3.3-70b-versatile",
@@ -1891,67 +1965,10 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
             "llama-3.1-8b-instant",
             "gemma2-9b-it",
             "mixtral-8x7b-32768",
-            "llama-3.2-3b-preview",
-            "llama-3.2-1b-preview",
         ]
-        providers.append(("groq", groq_client, groq_candidates))
-
-    last_error = None
-    for provider_name, client, raw_candidates in providers:
-        seen = set()
-        models = [m for m in raw_candidates
-                  if m and m not in seen and not seen.add(m)
-                  and (provider_name, m) not in _DEAD_MODELS]
-
-        for mod in models:
-            for attempt in range(1, AI_TRANSIENT_RETRIES + 1):
-                try:
-                    response = client.chat.completions.create(
-                        model=mod,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        timeout=15.0
-                    )
-                    choice = response.choices[0] if response and response.choices else None
-                    content = None
-                    if choice:
-                        raw_content = getattr(choice.message, "content", None) or ""
-                        content = strip_thinking_process(raw_content).strip() if raw_content else None
-                    finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                    if content:
-                        return content, mod, finish_reason
-                    logger.warning(f"{provider_name} model '{mod}' returned empty. Skipping.")
-                    break
-                except Exception as e:
-                    last_error = e
-                    if is_fatal_model_error(e):
-                        _DEAD_MODELS.add((provider_name, mod))
-                        logger.warning(f"{provider_name} model '{mod}' fatal (404/410). Marked dead.")
-                        break
-                    err_txt = str(e).lower()
-                    if "timed out" in err_txt or "timeout" in err_txt:
-                        logger.warning(f"{provider_name} model '{mod}' timed out. Trying next.")
-                        break
-                    # For exhausted/auth errors on NVIDIA, skip to Groq immediately
-                    sc = getattr(e, "status_code", None)
-                    if sc in {401, 402, 403, 410} or any(t in err_txt for t in ("credit", "exhausted", "quota", "unauthorized")):
-                        logger.warning(f"{provider_name} key issue (status {sc}). Skipping provider.")
-                        break
-                    should_retry = is_transient_ai_error(e) and attempt < AI_TRANSIENT_RETRIES
-                    logger.warning(f"{provider_name} model failed ({mod}, attempt {attempt}): {e}")
-                    if should_retry:
-                        time.sleep(AI_RETRY_BACKOFF_SEC * attempt)
-                        continue
-                    break
-            else:
-                continue
-            # If we hit a key-level fatal error, skip remaining models in this provider
-            if last_error:
-                sc = getattr(last_error, "status_code", None)
-                err_txt = str(last_error).lower()
-                if sc in {401, 402, 403, 410} or any(t in err_txt for t in ("credit", "exhausted", "quota", "unauthorized")):
-                    break  # Move to next provider
+        result = _try_provider("groq", groq_client, groq_candidates)
+        if result:
+            return result
 
     raise last_error if last_error else RuntimeError("All AI models failed.")
 
@@ -4943,45 +4960,27 @@ def handle_all_messages(message):
             try:
                 err = str(api_error).lower()
                 status_code = getattr(api_error, "status_code", None)
-                if status_code == 410 or any(term in err for term in ("410", "gone", "decommissioned", "credit", "exhausted")):
-                    user_msg = "🔄 *Switching AI engine...* Please send your message again in a moment."
-                elif status_code == 402 or any(term in err for term in ("402", "free limit reached", "payment required")):
-                    user_msg = "⏳ *AI is busy.* Please wait a few seconds and try again."
-                elif status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
-                    user_msg = "⏳ *Too many requests.* Please wait 10-20 seconds and try again."
-                elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer", "forbidden", "authorization failed")):
-                    user_msg = "🔄 *Switching AI engine...* Please send your message again in a moment."
-                elif status_code in {404, 400} or any(term in err for term in (
-                    "not found", "decommissioned", "not available", "unsupported",
-                    "404", "model_not_found", "does not exist", "no such model"
-                )):
+                # All API errors → single friendly message, no technical details to users
+                if status_code == 413 or any(term in err for term in ("context length", "maximum context", "prompt is too long", "request too large")):
                     user_msg = (
-                        "🔄 *AI model switching...*\n\n"
-                        "One moment — trying a faster model for you. Please send your message again."
-                    )
-                elif status_code == 413 or any(term in err for term in ("context length", "maximum context", "prompt is too long", "request too large")):
-                    user_msg = (
-                        "📝 *That conversation is too long for the AI model.*\n\n"
+                        "📝 *That conversation is too long.*\n\n"
                         "Please use /reset and send the message again."
                     )
                 elif status_code in {408, 500, 502, 503, 504} or any(term in err for term in ("timeout", "timed out", "service unavailable", "connection reset")):
+                    user_msg = "⚠️ Please try again in a moment."
+                else:
+                    # All other errors (401, 402, 403, 404, 410, credits, quota, etc.)
+                    # → silent friendly message, no "switching engine", no raw errors
+                    user_msg = "⚠️ Please try again in a moment."
+                # Admin-only: append real error for debugging
+                actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
+                if actor_id in MAIN_ADMIN_IDS:
                     user_msg = (
-                        "🔄 *AI service is temporarily unavailable.*\n\n"
-                        "Please try again in a moment."
+                        f"⚠️ *AI Error (admin debug):*\n\n"
+                        f"`{str(api_error)[:400]}`"
                     )
                 else:
-                    # Show the actual error details to help diagnose (admin-visible)
-                    actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
-                    if actor_id in MAIN_ADMIN_IDS:
-                        user_msg = (
-                            f"⚠️ *AI Error (admin debug):*\n\n"
-                            f"`{str(api_error)[:300]}`"
-                        )
-                    else:
-                        user_msg = (
-                            "⚠️ *AI service temporary issue.*\n\n"
-                            "Please try again in a moment."
-                        )
+                    pass  # already set above
                 safe_send_message(
                     message.chat.id,
                     user_msg

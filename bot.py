@@ -200,11 +200,12 @@ if NVIDIA_API_KEY:
                 _live = nvidia_client.models.list()
                 _NVIDIA_LIVE_MODELS = [m.id for m in _live.data if m.id]
                 print(f"✅ NVIDIA live models fetched: {len(_NVIDIA_LIVE_MODELS)} available.")
-                # Filter to chat-capable models (exclude embedding, rerank, vision-only, parse)
-                _CHAT_SKIP = ("embed", "rerank", "parse", "vision", "clip", "whisper", "tts", "speech")
+                # Only skip true non-chat models (embedding, reranking, STT, TTS, image-only)
+                # Keep "vl" (vision-language) models — they handle text chat too
+                _CHAT_SKIP = ("embed", "rerank", "parse", "clip", "whisper", "tts", "speech", "-vision-instruct")
                 _NVIDIA_LIVE_MODELS = [m for m in _NVIDIA_LIVE_MODELS
                                        if not any(s in m.lower() for s in _CHAT_SKIP)]
-                print(f"✅ Chat-capable NVIDIA models: {_NVIDIA_LIVE_MODELS[:10]}")
+                print(f"✅ Chat-capable NVIDIA models: {_NVIDIA_LIVE_MODELS}")
             except Exception as _me:
                 print(f"⚠️ Could not fetch NVIDIA model list: {_me}")
                 _NVIDIA_LIVE_MODELS = []
@@ -1967,25 +1968,18 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
 
         return None  # provider exhausted
 
-    # ── NVIDIA only (Groq removed — no GROQ_API_KEY in Render) ───────────────
+    # ── NVIDIA only ───────────────────────────────────────────────────────────
     if nvidia_client:
-        # Prefer live-fetched model list (always valid for this key).
-        # Fall back to hardcoded list if live fetch failed.
+        # Prefer live-fetched model list (guaranteed valid for this key).
+        # Hardcoded = exact models from your NVIDIA dashboard (Free Endpoint).
         hardcoded = [
             model if (model and "/" in model) else None,
             CHAT_MODEL if "/" in CHAT_MODEL else None,
-            # Nemotron free-endpoint models (shown in NVIDIA dashboard)
-            "nvidia/nemotron-3.5-lightning-30b-a3b",
-            "nvidia/llama-3.1-nemotron-70b-instruct",
-            "nvidia/llama-3.1-nemotron-51b-instruct",
-            "nvidia/nemotron-3.5-super-vl-120b-a12b",
-            "nvidia/nemotron-mini-4b-instruct",
-            # Standard Llama (may still be available)
-            "meta/llama-3.3-70b-instruct",
-            "meta/llama-3.1-70b-instruct",
-            "meta/llama-3.1-8b-instruct",
-            "meta/llama-3.2-3b-instruct",
-            "meta/llama-3.2-1b-instruct",
+            # ✅ Your 4 Free Endpoint models (fastest → largest)
+            "nvidia/nemotron-3.5-lightning-30b-a3b",          # fastest 30B
+            "nvidia/nemotron-3.5-super-vl-120b-a12b",         # 120B, multimodal-capable
+            "nvidia/nemotron-3-ultra-550b-a55b",               # 550B ultra
+            "deepseek-ai/deepseek-v4.1-flash",                 # DeepSeek free endpoint
             CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
         ]
         # Put live models first (they are guaranteed valid), then hardcoded as extra fallback

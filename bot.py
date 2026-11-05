@@ -2460,65 +2460,223 @@ def safe_send_sticker(chat_id, sticker_item):
         logger.warning(f"safe_send_sticker error for {chat_id}: {e}")
         return None
 
+# ============================================================================
+# 🏆 EPIC GAMES ENGINE — Score tracker, ranks, streaks, trivia, card game
+# ============================================================================
+
 GAME_EMOJIS = {
-    "dice": ("🎲", "Rolling the lucky dice..."),
-    "dart": ("🎯", "Aiming for the bullseye..."),
-    "basket": ("🏀", "Shooting for the hoop..."),
-    "football": ("⚽", "Taking the penalty kick..."),
-    "slot": ("🎰", "Spinning the golden slot machine..."),
-    "bowl": ("🎳", "Rolling down the bowling lane..."),
+    "dice":     ("🎲", "🎲 Rolling the epic dice of destiny..."),
+    "dart":     ("🎯", "🎯 Locking on target... bullseye incoming!"),
+    "basket":   ("🏀", "🏀 Launching the shot... the crowd goes wild!"),
+    "football": ("⚽", "⚽ Stepping up for the penalty... the world watches!"),
+    "slot":     ("🎰", "🎰 Pulling the lever... jackpot vibes loading!"),
+    "bowl":     ("🎳", "🎳 Ball released... pins trembling in fear!"),
 }
 
-def play_telegram_game(chat_id, game_type="dice"):
-    """Trigger Telegram animated dice games with friendly commentary."""
-    game_key = (game_type or "dice").strip().lower()
-    if game_key in {"roll", "die", "dices"}:
-        game_key = "dice"
-    elif game_key in {"darts", "target", "bullseye"}:
-        game_key = "dart"
-    elif game_key in {"basketball", "hoop", "slam"}:
-        game_key = "basket"
-    elif game_key in {"soccer", "goal", "kick"}:
-        game_key = "football"
-    elif game_key in {"casino", "slots", "777", "jackpot"}:
-        game_key = "slot"
-    elif game_key in {"bowling", "strike"}:
-        game_key = "bowl"
+# ── Rank system ──────────────────────────────────────────────────────────────
+RANK_THRESHOLDS = [
+    (0,    "🪨 Rookie"),
+    (10,   "🥉 Bronze"),
+    (30,   "🥈 Silver"),
+    (60,   "🥇 Gold"),
+    (100,  "💎 Diamond"),
+    (200,  "🏆 Legend"),
+    (500,  "👑 God-Tier"),
+]
 
-    item = GAME_EMOJIS.get(game_key, GAME_EMOJIS["dice"])
+GAME_SCORE_KEY  = "game_score"
+GAME_WINS_KEY   = "game_wins"
+GAME_PLAYED_KEY = "game_played"
+GAME_STREAK_KEY = "game_streak"
+GAME_BEST_KEY   = "game_best_streak"
+TRIVIA_KEY      = "trivia_session"
+CARD_KEY        = "card_session"
+
+def get_game_stats(user_id):
+    uid = str(user_id)
+    return {
+        "score":   int(memory.get_setting(uid, GAME_SCORE_KEY, 0)),
+        "wins":    int(memory.get_setting(uid, GAME_WINS_KEY, 0)),
+        "played":  int(memory.get_setting(uid, GAME_PLAYED_KEY, 0)),
+        "streak":  int(memory.get_setting(uid, GAME_STREAK_KEY, 0)),
+        "best":    int(memory.get_setting(uid, GAME_BEST_KEY, 0)),
+    }
+
+def add_game_score(user_id, points, win=False):
+    uid = str(user_id)
+    s = get_game_stats(uid)
+    s["score"]  += points
+    s["played"] += 1
+    if win:
+        s["wins"]   += 1
+        s["streak"] += 1
+        s["best"]    = max(s["best"], s["streak"])
+    else:
+        s["streak"] = 0
+    memory.update_setting(uid, GAME_SCORE_KEY,  s["score"])
+    memory.update_setting(uid, GAME_WINS_KEY,   s["wins"])
+    memory.update_setting(uid, GAME_PLAYED_KEY, s["played"])
+    memory.update_setting(uid, GAME_STREAK_KEY, s["streak"])
+    memory.update_setting(uid, GAME_BEST_KEY,   s["best"])
+    return s
+
+def get_rank(score):
+    rank = RANK_THRESHOLDS[0][1]
+    for threshold, name in RANK_THRESHOLDS:
+        if score >= threshold:
+            rank = name
+    return rank
+
+def format_stats_card(user_id, username="Player"):
+    s  = get_game_stats(user_id)
+    rk = get_rank(s["score"])
+    win_rate = round(s["wins"] / s["played"] * 100) if s["played"] else 0
+    return (
+        f"🎮 *{username}'s Game Stats*\n"
+        f"{'─'*28}\n"
+        f"🏅 Rank:        {rk}\n"
+        f"⭐ Score:       {s['score']} pts\n"
+        f"🎯 Games:       {s['played']} played\n"
+        f"🏆 Wins:        {s['wins']} ({win_rate}%)\n"
+        f"🔥 Streak:      {s['streak']} current\n"
+        f"⚡ Best streak: {s['best']}\n"
+        f"{'─'*28}"
+    )
+
+def streak_bonus_msg(streak):
+    if streak == 3:
+        return "🔥 *3-WIN STREAK!* You're on FIRE! +bonus!"
+    if streak == 5:
+        return "⚡ *5-WIN STREAK! UNSTOPPABLE!* 🌪️"
+    if streak >= 10:
+        return "👑 *LEGENDARY STREAK! ABSOLUTE GOD-MODE!* 🔱"
+    return None
+
+# ── Dice game commentary ──────────────────────────────────────────────────────
+_DICE_COMMENTS = {
+    6: ["🔥 PERFECT 6! Absolute LEGEND! +10 pts!", "🎲 MAX ROLL! The dice gods bow to you! 🙏"],
+    5: ["✨ 5! Outstanding roll! +6 pts!", "🎲 Strong 5! You're a natural! +6 pts!"],
+    4: ["🌟 Solid 4! Good stuff! +4 pts!", "👍 Nice 4! Decent roll! +4 pts!"],
+    3: ["😤 A 3... we can do better! +2 pts!", "🎲 Three's not bad, but you want that 6! +2 pts!"],
+    2: ["😬 Just a 2... next time! +1 pt!", "🎲 Two... the dice are testing you! +1 pt!"],
+    1: ["💀 Snake eyes! 1! The dice trolled you! +1 pt!", "😱 1... The worst roll... but you played! +1 pt!"],
+}
+_DICE_POINTS = {6: 10, 5: 6, 4: 4, 3: 2, 2: 1, 1: 1}
+
+_DART_COMMENTS = {
+    6: ["🎯 BULLSEYE!! Perfect precision! +10 pts!", "💥 DEAD CENTER! Sniper-level accuracy! +10 pts!"],
+    5: ["🎯 Outer bull! So close to perfect! +7 pts!", "✨ Near bullseye! Incredible aim! +7 pts!"],
+    4: ["🌟 Inner ring! Sharp shot! +5 pts!", "🎯 Solid hit! +5 pts!"],
+    3: ["😊 Triple ring! Not bad! +3 pts!", "🎯 Good throw! +3 pts!"],
+    2: ["🙂 Outer ring... keep aiming! +1 pt!", "🎯 Still on the board! +1 pt!"],
+    1: ["😬 Just barely on the board! +1 pt!", "💨 Almost missed! +1 pt!"],
+}
+_DART_POINTS = {6: 10, 5: 7, 4: 5, 3: 3, 2: 1, 1: 1}
+
+_BASKET_COMMENTS = {
+    5: ["🏀 SWISH!! NOTHING BUT NET! Pure silk! +10 pts!", "🌟 PERFECT SHOT! The crowd goes INSANE! +10 pts!"],
+    4: ["🏀 SWISH! Barely touched the rim! +8 pts!", "🔥 Great shot! Nearly perfect! +8 pts!"],
+    3: ["🏀 Off the backboard... and IN! +5 pts!", "😮 Lucky bounce and in! +5 pts!"],
+    2: ["😤 Rim shot, no good... +2 pts!", "🏀 So close! Kissed the rim! +2 pts!"],
+    1: ["💀 Airrrrball! 😂 +1 pt!", "🙈 Missed badly! But you tried! +1 pt!"],
+}
+_BASKET_POINTS = {5: 10, 4: 8, 3: 5, 2: 2, 1: 1}
+
+_FOOTBALL_COMMENTS = {
+    5: ["⚽ GOOOOOAAAALLL!! WORLD-CLASS STRIKE! 🥅🔥 +10 pts!", "🌍 TOP CORNER! PURE PERFECTION! +10 pts!"],
+    4: ["⚽ GOAL! Powerful shot low left! +8 pts!", "🔥 SCORED! The keeper had no chance! +8 pts!"],
+    3: ["⚽ Just squeezed it in! +5 pts!", "😮 Lucky goal! But it counts! +5 pts!"],
+    2: ["😬 Saved by the keeper! +2 pts!", "⚽ Hit the post! So close! +2 pts!"],
+    1: ["💀 Way over the bar! +1 pt!", "😂 That went into the stands! +1 pt!"],
+}
+_FOOTBALL_POINTS = {5: 10, 4: 8, 3: 5, 2: 2, 1: 1}
+
+_BOWL_COMMENTS = {
+    6: ["🎳 STRIKE!! ALL PINS DOWN! PERFECTION! 💥 +10 pts!", "⚡ PERFECT STRIKE! Bowling deity! +10 pts!"],
+    5: ["🎳 5 pins! One frame away from greatness! +7 pts!", "🌟 Strong roll! Nearly a strike! +7 pts!"],
+    4: ["🎳 4 pins down! Not bad! +4 pts!", "😊 Half the lane! Keep rolling! +4 pts!"],
+    3: ["🙂 3 pins... spare is still possible! +2 pts!", "🎳 Three down, learning! +2 pts!"],
+    2: ["😬 Just 2 pins... tough lane! +1 pt!", "🎳 Gutter is calling... but you stayed! +1 pt!"],
+    1: ["💀 GUTTER BALL! 1 surviving pin mocks you! +1 pt!", "😂 1 pin... the lane laughs! +1 pt!"],
+}
+_BOWL_POINTS = {6: 10, 5: 7, 4: 4, 3: 2, 2: 1, 1: 1}
+
+def _pick_comment(table, score):
+    opts = table.get(score, table.get(1, ["🌟 Good game! +1 pt!"]))
+    return random.choice(opts)
+
+def play_telegram_game(chat_id, game_type="dice"):
+    """Trigger Telegram animated dice games with epic commentary + score tracking."""
+    game_key = (game_type or "dice").strip().lower()
+    if game_key in {"roll", "die", "dices"}:            game_key = "dice"
+    elif game_key in {"darts", "target", "bullseye"}:   game_key = "dart"
+    elif game_key in {"basketball", "hoop", "slam"}:    game_key = "basket"
+    elif game_key in {"soccer", "goal", "kick"}:        game_key = "football"
+    elif game_key in {"casino", "slots", "777", "jackpot"}: game_key = "slot"
+    elif game_key in {"bowling", "strike"}:              game_key = "bowl"
+
+    item  = GAME_EMOJIS.get(game_key, GAME_EMOJIS["dice"])
     emoji, intro = item
 
-    safe_send_message(chat_id, f"{emoji} *{intro}*")
+    safe_send_message(chat_id, f"{intro}")
     try:
         msg = bot.send_dice(chat_id, emoji=emoji)
         val = getattr(getattr(msg, "dice", None), "value", None)
-        
+
         def _send_result(score):
-            if score is None:
-                safe_send_message(chat_id, "🎉 That was awesome! Tap below to play again!", reply_markup=build_game_replay_markup(game_key))
-                return
+            time.sleep(2.5)
+            # Build comment + points
             if game_key == "dice":
-                comment = "🔥 PERFECT 6! You are a champion!" if score == 6 else f"✨ Rolled a {score}! Fantastic roll!"
+                comment = _pick_comment(_DICE_COMMENTS, score)
+                pts     = _DICE_POINTS.get(score, 1)
+                win     = score == 6
             elif game_key == "dart":
-                comment = "🎯 BULLSEYE!! What precision!" if score == 6 else f"🎯 Solid hit with score {score}!"
+                comment = _pick_comment(_DART_COMMENTS, score)
+                pts     = _DART_POINTS.get(score, 1)
+                win     = score >= 5
             elif game_key == "basket":
-                comment = "🏀 SWISH!! Nothing but net! 🌟" if score in (4, 5) else f"🏀 Nice try! Score: {score}"
+                comment = _pick_comment(_BASKET_COMMENTS, score)
+                pts     = _BASKET_POINTS.get(score, 1)
+                win     = score >= 4
             elif game_key == "football":
-                comment = "⚽ GOOOOAAALLL!! Incredible strike! 🥅🔥" if score in (3, 4, 5) else f"⚽ Good attempt! Score: {score}"
+                comment = _pick_comment(_FOOTBALL_COMMENTS, score)
+                pts     = _FOOTBALL_POINTS.get(score, 1)
+                win     = score >= 3
             elif game_key == "slot":
-                comment = "🎰 777 JACKPOT!! MEGA WINNER! 💰🎉" if score == 64 else f"🎰 Nice spin! Value: {score}"
+                is_jackpot = score == 64
+                comment = ("🎰 ✨ JACKPOT 777!! MEGA WINNER! 💰🎉 +20 pts!" if is_jackpot
+                           else f"🎰 Nice spin! Value: {score}. +3 pts!")
+                pts, win = (20, True) if is_jackpot else (3, False)
             elif game_key == "bowl":
-                comment = "🎳 STRIKE!! All pins down! 💥" if score == 6 else f"🎳 Knocked down {score} pins!"
+                comment = _pick_comment(_BOWL_COMMENTS, score)
+                pts     = _BOWL_POINTS.get(score, 1)
+                win     = score == 6
             else:
-                comment = f"🌟 Game finished! Score: {score}"
-            
-            time.sleep(1.8)
-            safe_send_message(chat_id, f"{comment}\n\n*Dare to play again?* 👇", reply_markup=build_game_replay_markup(game_key))
+                comment = f"🌟 Great game! Score: {score}"
+                pts, win = 2, False
+
+            if score is None:
+                safe_send_message(chat_id, "🎉 Epic game! Tap below to go again!", reply_markup=build_game_replay_markup(game_key))
+                return
+
+            stats = add_game_score(chat_id, pts, win=win)
+            rank  = get_rank(stats["score"])
+            streak_msg = streak_bonus_msg(stats["streak"])
+
+            result_text = (
+                f"{comment}\n\n"
+                f"⭐ *+{pts} pts* → Total: *{stats['score']}* | Rank: {rank}\n"
+                f"🔥 Streak: {stats['streak']} | 🏆 Best: {stats['best']}"
+            )
+            if streak_msg:
+                result_text += f"\n\n{streak_msg}"
+
+            safe_send_message(chat_id, result_text, reply_markup=build_game_replay_markup(game_key))
 
         Thread(target=_send_result, args=(val,), daemon=True).start()
     except Exception as e:
         logger.error(f"play_telegram_game error: {e}")
-        safe_send_message(chat_id, f"{emoji} High roll! You're always a winner in my book! ✨")
+        safe_send_message(chat_id, f"{emoji} You're always a winner in my book! ✨")
 
 def build_sticker_panel_markup():
     markup = InlineKeyboardMarkup(row_width=2)
@@ -2550,47 +2708,252 @@ def build_sticker_replay_markup(mood):
 def build_games_menu_markup():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🎲 Lucky Dice", callback_data="game_play_dice"),
-        InlineKeyboardButton("🎯 Dart Target", callback_data="game_play_dart"),
-        InlineKeyboardButton("🏀 Basketball Shot", callback_data="game_play_basket"),
-        InlineKeyboardButton("⚽ Soccer Penalty", callback_data="game_play_football"),
-        InlineKeyboardButton("🎰 Slot Machine", callback_data="game_play_slot"),
-        InlineKeyboardButton("🎳 Bowling Strike", callback_data="game_play_bowl"),
-        InlineKeyboardButton("🎭 Back to Stickers", callback_data="stk_menu_home"),
+        InlineKeyboardButton("🎲 Lucky Dice",       callback_data="game_play_dice"),
+        InlineKeyboardButton("🎯 Bullseye Dart",    callback_data="game_play_dart"),
+        InlineKeyboardButton("🏀 Basketball Shot",  callback_data="game_play_basket"),
+        InlineKeyboardButton("⚽ Soccer Penalty",   callback_data="game_play_football"),
+        InlineKeyboardButton("🎰 Jackpot Slots",    callback_data="game_play_slot"),
+        InlineKeyboardButton("🎳 Bowling Strike",   callback_data="game_play_bowl"),
+        InlineKeyboardButton("🧠 Trivia Challenge", callback_data="game_trivia_start"),
+        InlineKeyboardButton("🃏 Higher or Lower",  callback_data="game_card_start"),
+        InlineKeyboardButton("📊 My Game Stats",    callback_data="game_my_stats"),
     )
     return markup
 
 def build_game_replay_markup(game_type):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🔁 Play Again", callback_data=f"game_play_{game_type}"),
-        InlineKeyboardButton("🎲 All Games", callback_data="stk_open_games"),
-        InlineKeyboardButton("🎭 Stickers Menu", callback_data="stk_menu_home"),
+        InlineKeyboardButton("🔁 Play Again",      callback_data=f"game_play_{game_type}"),
+        InlineKeyboardButton("🎮 All Games",        callback_data="stk_open_games"),
+        InlineKeyboardButton("📊 My Stats",         callback_data="game_my_stats"),
     )
     return markup
 
-def send_sticker_station_panel(chat_id):
-    safe_send_message(
-        chat_id,
-        "🎭 *Sticker & Emoji Masterpiece Station* ✨\n\n"
-        "Choose any mood or category below to get an awesome sticker or emoji art!\n"
-        "You can also use:\n"
-        "• `/sticker [mood]` (e.g. `/sticker happy`, `/sticker love`, `/sticker cat`)\n"
-        "• `/makesticker [prompt]` to generate a custom AI sticker!\n"
-        "• `/emoji [text]` to turn text into expressive emoji art!\n"
-        "• Send ANY sticker to me and I will appreciate it and learn it! 💖",
-        reply_markup=build_sticker_panel_markup()
-    )
-
 def send_games_panel(chat_id):
+    s = get_game_stats(chat_id)
+    rk = get_rank(s["score"])
     safe_send_message(
         chat_id,
-        "🎲 *Arcade & Games Corner* 🌟\n\n"
-        "Pick a Telegram interactive game below to test your luck and skills!\n"
-        "Watch the real animated physics and see your score!",
+        f"🎮 *Epic Arcade — Artovix Games* 🏆\n\n"
+        f"Your rank: {rk} | ⭐ {s['score']} pts | 🔥 Streak: {s['streak']}\n\n"
+        f"Choose a game below — every play earns points, builds streaks, and climbs the ranks!\n"
+        f"🧠 Trivia & 🃏 Higher-or-Lower are AI-powered brain games!",
         reply_markup=build_games_menu_markup()
     )
 
+# ── 🧠 TRIVIA GAME ──────────────────────────────────────────────────────────
+_TRIVIA_CATEGORIES = [
+    "Science & Nature", "History", "Geography", "Pop Culture",
+    "Technology & AI", "Sports", "Movies & TV", "Music",
+    "Literature", "Space & Universe", "Animals", "Food & Cooking",
+]
+
+def start_trivia(chat_id):
+    """Ask AI to generate a fresh trivia question, store answer, send question with A/B/C/D buttons."""
+    cat = random.choice(_TRIVIA_CATEGORIES)
+    prompt = (
+        f"Generate ONE trivia question about '{cat}' with exactly 4 answer choices.\n"
+        "Format STRICTLY as:\n"
+        "QUESTION: <question text>\n"
+        "A: <choice>\nB: <choice>\nC: <choice>\nD: <choice>\n"
+        "ANSWER: <A, B, C, or D>\n"
+        "FACT: <one fun sentence about the answer>\n"
+        "No extra text."
+    )
+    try:
+        raw, _, _ = groq_chat_with_fallback(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9, max_tokens=300,
+            model=get_purpose_model("chat", chat_id)
+        )
+        raw = strip_thinking_process(raw or "")
+        lines_q = [l.strip() for l in raw.splitlines() if l.strip()]
+        q_text = a = b = c = d = answer = fact = ""
+        for ln in lines_q:
+            if ln.upper().startswith("QUESTION:"):  q_text = ln.split(":", 1)[1].strip()
+            elif ln.upper().startswith("A:"):         a      = ln.split(":", 1)[1].strip()
+            elif ln.upper().startswith("B:"):         b      = ln.split(":", 1)[1].strip()
+            elif ln.upper().startswith("C:"):         c      = ln.split(":", 1)[1].strip()
+            elif ln.upper().startswith("D:"):         d      = ln.split(":", 1)[1].strip()
+            elif ln.upper().startswith("ANSWER:"):   answer = ln.split(":", 1)[1].strip().upper()
+            elif ln.upper().startswith("FACT:"):     fact   = ln.split(":", 1)[1].strip()
+
+        if not (q_text and a and b and c and d and answer):
+            safe_send_message(chat_id, "⚠️ Couldn't generate trivia right now. Try again!")
+            return
+
+        # Store session
+        memory.update_setting(str(chat_id), TRIVIA_KEY, {"answer": answer, "fact": fact, "cat": cat})
+
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton(f"🅰️  {a}", callback_data="trivia_ans_A"),
+            InlineKeyboardButton(f"🅱️  {b}", callback_data="trivia_ans_B"),
+            InlineKeyboardButton(f"🅲  {c}", callback_data="trivia_ans_C"),
+            InlineKeyboardButton(f"🅳  {d}", callback_data="trivia_ans_D"),
+            InlineKeyboardButton("❌ Skip",  callback_data="trivia_skip"),
+        )
+        safe_send_message(
+            chat_id,
+            f"🧠 *Trivia Challenge* — {cat}\n\n❓ *{q_text}*\n\nPick your answer:",
+            reply_markup=markup
+        )
+    except Exception as e:
+        logger.error(f"Trivia generate error: {e}")
+        safe_send_message(chat_id, "⚠️ Trivia unavailable right now. Try again!")
+
+def handle_trivia_answer(chat_id, chosen: str):
+    """Check trivia answer, award points, send result."""
+    session = memory.get_setting(str(chat_id), TRIVIA_KEY, None)
+    if not session:
+        safe_send_message(chat_id, "⚠️ No active trivia. Tap *Trivia* in games to start!")
+        return
+    memory.update_setting(str(chat_id), TRIVIA_KEY, None)
+
+    correct = session.get("answer", "")
+    fact    = session.get("fact", "")
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🧠 Next Question", callback_data="game_trivia_start"),
+        InlineKeyboardButton("🎮 All Games",      callback_data="stk_open_games"),
+        InlineKeyboardButton("📊 My Stats",        callback_data="game_my_stats"),
+    )
+
+    if chosen == correct:
+        pts   = 15
+        stats = add_game_score(chat_id, pts, win=True)
+        rk    = get_rank(stats["score"])
+        bonus = streak_bonus_msg(stats["streak"])
+        msg   = (
+            f"✅ *CORRECT! Answer was {correct}!*\n\n"
+            f"💡 {fact}\n\n"
+            f"⭐ *+{pts} pts* → Total: *{stats['score']}* | {rk}\n"
+            f"🔥 Streak: {stats['streak']}"
+        )
+        if bonus:
+            msg += f"\n\n{bonus}"
+    else:
+        stats = add_game_score(chat_id, 0, win=False)
+        msg   = (
+            f"❌ *Wrong!* Correct answer was: *{correct}*\n\n"
+            f"💡 {fact}\n\n"
+            f"Streak reset. Keep going — you've got this! 💪"
+        )
+    safe_send_message(chat_id, msg, reply_markup=markup)
+
+# ── 🃏 HIGHER OR LOWER CARD GAME ─────────────────────────────────────────────
+_CARD_VALUES = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
+_CARD_SUITS  = ["♠️","♥️","♦️","♣️"]
+_CARD_RANK   = {v: i for i, v in enumerate(_CARD_VALUES)}
+
+def _random_card():
+    return random.choice(_CARD_VALUES), random.choice(_CARD_SUITS)
+
+def _card_display(val, suit):
+    return f"*{val}{suit}*"
+
+def start_card_game(chat_id):
+    """Start a Higher-or-Lower round: show current card, ask higher/lower."""
+    val, suit = _random_card()
+    memory.update_setting(str(chat_id), CARD_KEY, {"val": val, "suit": suit, "round": 1, "streak": 0})
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("⬆️ Higher",  callback_data="card_guess_higher"),
+        InlineKeyboardButton("⬇️ Lower",   callback_data="card_guess_lower"),
+        InlineKeyboardButton("🤝 Same",    callback_data="card_guess_same"),
+        InlineKeyboardButton("🚪 Cash Out", callback_data="card_cashout"),
+    )
+    safe_send_message(
+        chat_id,
+        f"🃏 *Higher or Lower*\n\n"
+        f"Current card: {_card_display(val, suit)}\n\n"
+        f"Will the next card be *Higher*, *Lower*, or the *Same*?\n"
+        f"Each correct guess = +5 pts. Cash out anytime to keep your score!",
+        reply_markup=markup
+    )
+
+def handle_card_guess(chat_id, guess: str):
+    """Process a Higher-or-Lower guess."""
+    session = memory.get_setting(str(chat_id), CARD_KEY, None)
+    if not session or guess == "cashout":
+        if session:
+            earned = session.get("streak", 0) * 5
+            stats  = add_game_score(chat_id, earned, win=earned > 0)
+            memory.update_setting(str(chat_id), CARD_KEY, None)
+            rk     = get_rank(stats["score"])
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("🃏 New Game", callback_data="game_card_start"),
+                InlineKeyboardButton("🎮 All Games", callback_data="stk_open_games"),
+            )
+            safe_send_message(
+                chat_id,
+                f"🏦 *Cashed Out!*\n\n"
+                f"You banked *+{earned} pts* across {session.get('round',1)-1} rounds!\n"
+                f"Total: *{stats['score']}* | Rank: {rk}",
+                reply_markup=markup
+            )
+        else:
+            safe_send_message(chat_id, "⚠️ No active game! Start a new one from Games menu.")
+        return
+
+    old_val  = session["val"]
+    old_suit = session["suit"]
+    new_val, new_suit = _random_card()
+    old_rank = _CARD_RANK[old_val]
+    new_rank = _CARD_RANK[new_val]
+
+    if new_rank > old_rank:   actual = "higher"
+    elif new_rank < old_rank: actual = "lower"
+    else:                     actual = "same"
+
+    correct = (guess == actual)
+    session["round"]  = session.get("round", 1) + 1
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("⬆️ Higher",  callback_data="card_guess_higher"),
+        InlineKeyboardButton("⬇️ Lower",   callback_data="card_guess_lower"),
+        InlineKeyboardButton("🤝 Same",    callback_data="card_guess_same"),
+        InlineKeyboardButton("🚪 Cash Out", callback_data="card_cashout"),
+    )
+
+    if correct:
+        session["streak"] = session.get("streak", 0) + 1
+        pts_so_far = session["streak"] * 5
+        session["val"]  = new_val
+        session["suit"] = new_suit
+        memory.update_setting(str(chat_id), CARD_KEY, session)
+        safe_send_message(
+            chat_id,
+            f"✅ *Correct!*\n"
+            f"{_card_display(old_val, old_suit)} → {_card_display(new_val, new_suit)} — it was *{actual}*!\n\n"
+            f"🔥 Streak: {session['streak']} correct | Banked so far: *{pts_so_far} pts*\n\n"
+            f"Next card is {_card_display(new_val, new_suit)} — Higher, Lower, or Same?",
+            reply_markup=markup
+        )
+    else:
+        earned = session.get("streak", 0) * 5
+        stats  = add_game_score(chat_id, earned, win=False)
+        memory.update_setting(str(chat_id), CARD_KEY, None)
+        rk     = get_rank(stats["score"])
+        end_markup = InlineKeyboardMarkup(row_width=2)
+        end_markup.add(
+            InlineKeyboardButton("🃏 Play Again", callback_data="game_card_start"),
+            InlineKeyboardButton("🎮 All Games",  callback_data="stk_open_games"),
+            InlineKeyboardButton("📊 My Stats",   callback_data="game_my_stats"),
+        )
+        safe_send_message(
+            chat_id,
+            f"❌ *Wrong!*\n"
+            f"{_card_display(old_val, old_suit)} → {_card_display(new_val, new_suit)} — it was *{actual}*, not {guess}!\n\n"
+            f"You earned *+{earned} pts* this round.\n"
+            f"Total: *{stats['score']}* | Rank: {rk}",
+            reply_markup=end_markup
+        )
+
+# ── /gamestats command handler ───────────────────────────────────────────────
 def generate_ai_sticker(chat_id, prompt: str):
     """Generate a custom sticker image using AI and send as WebP sticker or sticker art."""
     clean_p = (prompt or "").strip()
@@ -2703,15 +3066,22 @@ def is_natural_sticker_request(text: str):
 
 def is_natural_game_request(text: str):
     t = (text or "").lower().strip()
+    # Trivia / quiz requests
+    if any(phrase in t for phrase in ["play trivia", "quiz me", "ask me trivia", "trivia game", "play quiz"]):
+        return True, "trivia"
+    # Card game requests
+    if any(phrase in t for phrase in ["higher or lower", "card game", "play cards", "play higher", "higher lower"]):
+        return True, "card"
+    # Physical dice games
     if any(phrase in t for phrase in [
         "play a game", "let's play a game", "play dice", "roll dice",
         "roll a dice", "play darts", "play basketball", "play slot", "play game"
     ]) and len(t.split()) <= 7:
-        if "dart" in t: return True, "dart"
-        if "basket" in t: return True, "basket"
-        if "soccer" in t or "football" in t: return True, "football"
-        if "slot" in t or "casino" in t: return True, "slot"
-        if "bowl" in t: return True, "bowl"
+        if "dart" in t:                          return True, "dart"
+        if "basket" in t:                        return True, "basket"
+        if "soccer" in t or "football" in t:    return True, "football"
+        if "slot" in t or "casino" in t:        return True, "slot"
+        if "bowl" in t:                          return True, "bowl"
         return True, "dice"
     return False, None
 
@@ -3269,13 +3639,16 @@ def handle_help(message):
 `/askdoc [question]` - Upload documents & ask questions
 `/summarize [text]` - Instant smart summary
 
-*🎲 Interactive Games*
-`/game` or `/dice` - Roll animated dice
-`/dart` - Play dart challenge
-`/basket` - Basketball shooting game
-`/soccer` - Soccer penalty kick
-`/slot` - Casino slot machine spin
-`/bowl` - Bowling strike
+*🎲 Epic Games Arcade*
+`/game` or `/dice` - 🎲 Lucky Dice (earn pts!)
+`/dart` - 🎯 Bullseye Dart Challenge
+`/basket` - 🏀 Basketball Shot
+`/soccer` - ⚽ Soccer Penalty
+`/slot` - 🎰 Jackpot Slot Machine
+`/bowl` - 🎳 Bowling Strike
+`/trivia` or `/quiz` - 🧠 AI Trivia Challenge (+15 pts)
+`/card` or `/higher` - 🃏 Higher or Lower Card Game
+`/gamestats` or `/rank` - 📊 Your rank & game stats
 
 *⚙️ Preferences & Tools*
 `/model [name]` - Switch NVIDIA NIM models (Nemotron, DeepSeek, etc.)
@@ -3554,6 +3927,40 @@ def handle_bowl_command(message):
         play_telegram_game(message.chat.id, "bowl")
     except Exception as e:
         logger.error(f"Bowl command error: {e}")
+
+@bot.message_handler(commands=['trivia', 'quiz'])
+def handle_trivia_command(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        bot.send_chat_action(message.chat.id, 'typing')
+        Thread(target=start_trivia, args=(message.chat.id,), daemon=True).start()
+    except Exception as e:
+        logger.error(f"Trivia command error: {e}")
+        safe_send_message(message.chat.id, "❌ Could not start trivia right now.")
+
+@bot.message_handler(commands=['card', 'higher', 'highlower'])
+def handle_card_command(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        start_card_game(message.chat.id)
+    except Exception as e:
+        logger.error(f"Card game command error: {e}")
+        safe_send_message(message.chat.id, "❌ Could not start card game.")
+
+@bot.message_handler(commands=['gamestats', 'gscore', 'rank'])
+def handle_gamestats_command(message):
+    try:
+        if not ensure_channel_access(message):
+            return
+        uname = getattr(message.from_user, "first_name", None) or "Player"
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("🎮 Play Games", callback_data="stk_open_games"))
+        safe_send_message(message.chat.id, format_stats_card(message.chat.id, uname), reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Gamestats command error: {e}")
+        safe_send_message(message.chat.id, "❌ Could not load stats.")
 
 @bot.message_handler(commands=['askdoc', 'doc'])
 def handle_askdoc(message):
@@ -4479,10 +4886,16 @@ def handle_all_messages(message):
             if _greeting_sticker:
                 safe_send_sticker(message.chat.id, _greeting_sticker)
 
-        # Natural game request in chat (e.g., "let's play dice", "play darts")
+        # Natural game request in chat (e.g., "let's play dice", "play trivia")
         is_gm, gm_type = is_natural_game_request(text)
         if is_gm:
-            play_telegram_game(message.chat.id, gm_type)
+            if gm_type == "trivia":
+                bot.send_chat_action(message.chat.id, 'typing')
+                Thread(target=start_trivia, args=(message.chat.id,), daemon=True).start()
+            elif gm_type == "card":
+                start_card_game(message.chat.id)
+            else:
+                play_telegram_game(message.chat.id, gm_type)
             return
 
         pending_mode = get_pending_mode(message.chat.id)
@@ -5086,6 +5499,70 @@ def handle_callback(call):
             gtype = str(call.data).replace("game_play_", "").strip().lower()
             bot.answer_callback_query(call.id, f"Launching {gtype}! 🎯")
             play_telegram_game(call.message.chat.id, gtype)
+
+        elif call.data == "game_trivia_start":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "🧠 Generating trivia...")
+            Thread(target=start_trivia, args=(call.message.chat.id,), daemon=True).start()
+
+        elif str(call.data).startswith("trivia_ans_"):
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            chosen = call.data.replace("trivia_ans_", "").strip().upper()
+            bot.answer_callback_query(call.id, f"You picked {chosen}!")
+            handle_trivia_answer(call.message.chat.id, chosen)
+
+        elif call.data == "trivia_skip":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            memory.update_setting(str(call.message.chat.id), TRIVIA_KEY, None)
+            bot.answer_callback_query(call.id, "Skipped!")
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("🧠 New Question", callback_data="game_trivia_start"),
+                InlineKeyboardButton("🎮 All Games",    callback_data="stk_open_games"),
+            )
+            safe_send_message(call.message.chat.id, "⏭️ Skipped! Ready for a new question?", reply_markup=markup)
+
+        elif call.data == "game_card_start":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "🃏 Dealing cards...")
+            start_card_game(call.message.chat.id)
+
+        elif str(call.data).startswith("card_guess_"):
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            guess = call.data.replace("card_guess_", "").strip().lower()
+            bot.answer_callback_query(call.id, f"Guessing {guess}...")
+            handle_card_guess(call.message.chat.id, guess)
+
+        elif call.data == "card_cashout":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "💰 Cashing out!")
+            handle_card_guess(call.message.chat.id, "cashout")
+
+        elif call.data == "game_my_stats":
+            if not ensure_channel_access(call):
+                bot.answer_callback_query(call.id, "Join channel first")
+                return
+            bot.answer_callback_query(call.id, "📊 Loading stats...")
+            uname = getattr(getattr(call, "from_user", None), "first_name", None) or "Player"
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(InlineKeyboardButton("🎮 Back to Games", callback_data="stk_open_games"))
+            safe_send_message(
+                call.message.chat.id,
+                format_stats_card(call.message.chat.id, uname),
+                reply_markup=markup
+            )
         
     except Exception as e:
         logger.error(f"Callback error: {e}")

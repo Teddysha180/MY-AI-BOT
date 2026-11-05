@@ -184,14 +184,30 @@ GROQ_RETRY_BACKOFF_SEC = AI_RETRY_BACKOFF_SEC
 
 # Initialize clients
 nvidia_client  = None
-groq_client    = None   # Silent fallback when NVIDIA credits run out
+groq_client    = None   # Optional fallback when GROQ_API_KEY is set
 pollinations_client = None  # Image-only; never used for text
+
+# Dynamically fetched NVIDIA model list (populated at startup)
+_NVIDIA_LIVE_MODELS = []
 
 if NVIDIA_API_KEY:
     if OpenAI:
         try:
             nvidia_client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY, timeout=20.0)
             print("✅ NVIDIA NIM client initialized successfully.")
+            # Fetch live model list so we only use models actually available on this key
+            try:
+                _live = nvidia_client.models.list()
+                _NVIDIA_LIVE_MODELS = [m.id for m in _live.data if m.id]
+                print(f"✅ NVIDIA live models fetched: {len(_NVIDIA_LIVE_MODELS)} available.")
+                # Filter to chat-capable models (exclude embedding, rerank, vision-only, parse)
+                _CHAT_SKIP = ("embed", "rerank", "parse", "vision", "clip", "whisper", "tts", "speech")
+                _NVIDIA_LIVE_MODELS = [m for m in _NVIDIA_LIVE_MODELS
+                                       if not any(s in m.lower() for s in _CHAT_SKIP)]
+                print(f"✅ Chat-capable NVIDIA models: {_NVIDIA_LIVE_MODELS[:10]}")
+            except Exception as _me:
+                print(f"⚠️ Could not fetch NVIDIA model list: {_me}")
+                _NVIDIA_LIVE_MODELS = []
         except Exception as e:
             print(f"⚠️ NVIDIA NIM client init warning: {e}")
             nvidia_client = None
@@ -1953,22 +1969,39 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
 
     # ── NVIDIA only (Groq removed — no GROQ_API_KEY in Render) ───────────────
     if nvidia_client:
-        nvidia_candidates = [
+        # Prefer live-fetched model list (always valid for this key).
+        # Fall back to hardcoded list if live fetch failed.
+        hardcoded = [
             model if (model and "/" in model) else None,
             CHAT_MODEL if "/" in CHAT_MODEL else None,
-            # Largest → smallest for best quality first, tiny models as last resort
+            # Nemotron free-endpoint models (shown in NVIDIA dashboard)
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "nvidia/llama-3.1-nemotron-51b-instruct",
+            "nvidia/nemotron-3.5-super-vl-120b-a12b",
+            "nvidia/nemotron-mini-4b-instruct",
+            # Standard Llama (may still be available)
             "meta/llama-3.3-70b-instruct",
             "meta/llama-3.1-70b-instruct",
             "meta/llama-3.1-8b-instruct",
             "meta/llama-3.2-3b-instruct",
-            "mistralai/mistral-nemo-12b-instruct",
-            "google/gemma-3-12b-it",
-            "google/gemma-3-4b-it",
-            "microsoft/phi-3-mini-128k-instruct",
             "meta/llama-3.2-1b-instruct",
-            "mistralai/mistral-7b-instruct-v0.3",
             CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
         ]
+        # Put live models first (they are guaranteed valid), then hardcoded as extra fallback
+        if _NVIDIA_LIVE_MODELS:
+            # Sort: prefer instruct/chat/versatile models, put smaller ones last
+            def _rank(m):
+                ml = m.lower()
+                if "70b" in ml or "120b" in ml: return 0
+                if "30b" in ml or "51b" in ml: return 1
+                if "8b" in ml or "12b" in ml: return 2
+                if "4b" in ml or "3b" in ml: return 3
+                return 4
+            live_sorted = sorted(_NVIDIA_LIVE_MODELS, key=_rank)
+            nvidia_candidates = live_sorted + [m for m in hardcoded if m]
+        else:
+            nvidia_candidates = hardcoded
         result = _try_provider("nvidia", nvidia_client, nvidia_candidates)
         if result:
             return result

@@ -588,10 +588,13 @@ def strip_thinking_process(text):
     """Strip out leaked internal chain-of-thought or thinking blocks from reasoning models."""
     if not text:
         return text
-    
+
     cleaned = text.strip()
 
-    # 1. Remove <think>...</think> blocks
+    # 0. Remove [Part N/M] prefix lines added before stripping (they appear in multi-chunk paths)
+    cleaned = re.sub(r'^\[Part\s+\d+/\d+\]\s*\n?', '', cleaned).strip()
+
+    # 1. Remove <think>...</think> blocks (may span entire response)
     cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned, flags=re.IGNORECASE).strip()
     if '<think>' in cleaned.lower():
         parts = re.split(r'</think>', cleaned, flags=re.IGNORECASE)
@@ -600,40 +603,65 @@ def strip_thinking_process(text):
         else:
             cleaned = re.sub(r'<think>[\s\S]*', '', cleaned, flags=re.IGNORECASE).strip()
 
-    # 2. Check for "Here's a thinking process:" or similar leaked chain-of-thought blocks
-    think_header = re.search(
-        r"(?:^|\n)(?:Here'?s a thinking process(?:\s+that leads to.*?)?:|Thinking Process:|\[Thinking Process\])\s*",
-        cleaned,
-        flags=re.IGNORECASE
+    # 2. Broad catch: if the entire text is a chain-of-thought dump (numbered steps, no real reply)
+    #    patterns that signal pure thinking output with no actual user-facing reply
+    THINKING_HEADERS = re.compile(
+        r"(?:^|\n)\s*(?:"
+        r"Here'?s\s+(?:a\s+)?(?:my\s+)?thinking\s+process\b[:\s]*"
+        r"|Thinking\s+Process\s*:"
+        r"|\[Thinking\s+Process\]"
+        r"|(?:Let\s+me\s+think|I(?:'ll| will)\s+think)\s+(?:through|about|step)"
+        r"|Chain[\-\s]of[\-\s]Thought\s*:"
+        r"|Internal\s+Reasoning\s*:"
+        r"|Step[\-\s]by[\-\s]Step\s+(?:Analysis|Reasoning|Thinking)\s*:"
+        r")",
+        re.IGNORECASE
     )
-    if think_header:
-        after_header = cleaned[think_header.end():].strip()
+
+    header_match = THINKING_HEADERS.search(cleaned)
+    if header_match:
+        before = cleaned[:header_match.start()].strip()
+        # Strip the colon/whitespace that may follow the header keyword
+        after_header = re.sub(r'^[:\s]+', '', cleaned[header_match.end():]).strip()
+
+        # Try to find the actual reply after a horizontal divider (--- or ***)
         divider_split = re.split(r'\n(?:\-{3,}|\*{3,}|_{3,})\s*\n', after_header, maxsplit=1)
         if len(divider_split) > 1 and divider_split[1].strip():
-            cleaned = divider_split[1].strip()
+            cleaned = (before + "\n\n" + divider_split[1].strip()).strip()
         else:
+            # Walk paragraphs: skip numbered/bulleted thought steps, keep first non-thought para
             paras = after_header.split("\n\n")
             actual_reply = []
             capturing = False
             for p in paras:
                 p_str = p.strip()
-                is_thought = (
-                    re.match(r'^\d+\.\s+(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review)', p_str, re.IGNORECASE)
-                    or p_str.startswith('- ')
-                    or p_str.startswith('* ')
-                    or re.match(r'^(?:Tone|Audience|Goal|Language|Constraints|Safety|Persona|Guidelines):', p_str, re.IGNORECASE)
-                    or "thinking process" in p_str.lower()
+                is_thought = bool(
+                    re.match(r'^\d+[\.\)]\s+(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review|Consider|Note|Remember|Output|Input|Format|Tone|Persona|Role|Goal)', p_str, re.IGNORECASE)
+                    or re.match(r'^[\-\*]\s+', p_str)
+                    or re.match(r'^(?:Tone|Audience|Goal|Language|Constraints|Safety|Persona|Guidelines|Format|Output|Input)\s*:', p_str, re.IGNORECASE)
+                    or re.search(r'thinking\s+process|chain.of.thought|internal\s+reasoning', p_str, re.IGNORECASE)
                 )
                 if capturing:
                     actual_reply.append(p)
-                elif not is_thought:
+                elif not is_thought and p_str:
                     capturing = True
                     actual_reply.append(p)
-            
+
             if actual_reply:
-                cleaned = "\n\n".join(actual_reply).strip()
+                reply_text = "\n\n".join(actual_reply).strip()
+                cleaned = (before + "\n\n" + reply_text).strip() if before else reply_text
+            elif before:
+                cleaned = before
             else:
                 cleaned = "Hello there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
+
+    # 3. Final safety: if output is still suspiciously just a numbered outline with no conversational text
+    #    (more than 5 numbered items and no sentence ending with ? or !) — replace with fallback
+    lines = cleaned.splitlines()
+    numbered = sum(1 for ln in lines if re.match(r'^\s*\d+[\.\)]\s+', ln))
+    has_reply = bool(re.search(r'[a-z]{10,}', cleaned, re.IGNORECASE))  # at least 10 consecutive letters
+    if numbered >= 5 and not has_reply:
+        cleaned = "Hey there! 😊✨ How can I help you today? 🚀"
 
     return cleaned
 
@@ -764,6 +792,9 @@ def ensure_copyable_code_blocks(text, preferred_language="python"):
 
 def safe_send_message(chat_id, text, **kwargs):
     """Safely send a message with error handling"""
+    # Strip any leaked chain-of-thought BEFORE chunking so it doesn't appear in any part
+    text = strip_thinking_process(text) if text else text
+
     def _send_once(payload, local_kwargs):
         try:
             return bot.send_message(chat_id, payload, **local_kwargs)
@@ -781,7 +812,7 @@ def safe_send_message(chat_id, text, **kwargs):
 
     chunks = split_text_for_telegram(text, max_len=3600)
     if len(chunks) == 1:
-        return _send_once(chunks[0], kwargs)
+        return _send_once(clean_markdown(chunks[0]), kwargs)
 
     first_message = None
     total = len(chunks)
@@ -2279,6 +2310,40 @@ class StickerAndEmojiVault:
         return random.choice(options)
 
 sticker_vault = StickerAndEmojiVault(STICKERS_STORE_FILE)
+
+
+def seed_sticker_pack(pack_name: str, default_mood: str = "robot", extra_moods: list = None):
+    """
+    Fetch a Telegram sticker pack by name and seed the vault with all its stickers.
+    Already-stored stickers are skipped (idempotent). Runs safely in a background thread.
+    """
+    extra_moods = extra_moods or []
+    try:
+        sticker_set = bot.get_sticker_set(pack_name)
+        count = 0
+        for sticker in sticker_set.stickers:
+            file_id = getattr(sticker, "file_id", "")
+            emoji   = getattr(sticker, "emoji", "") or ""
+            if not file_id:
+                continue
+            detected_mood = sticker_vault.detect_mood_from_emoji(emoji) if emoji else default_mood
+            # Seed under detected mood
+            sticker_vault.add_sticker(file_id=file_id, emoji=emoji, set_name=pack_name)
+            # Also add under any explicitly requested extra moods so the pack is reachable from more categories
+            for mood in extra_moods:
+                with sticker_vault.lock:
+                    cat = sticker_vault.data["stickers"].setdefault(mood, [])
+                    if file_id not in cat:
+                        cat.append(file_id)
+            count += 1
+        if count:
+            sticker_vault._save()
+        logger.info(f"[StickerSeed] Seeded {count} stickers from pack '{pack_name}'")
+        return count
+    except Exception as e:
+        logger.warning(f"[StickerSeed] Could not seed pack '{pack_name}': {e}")
+        return 0
+
 
 def safe_send_sticker(chat_id, sticker_item):
     """Safely send a sticker with automatic format and download handling."""
@@ -5051,6 +5116,20 @@ if __name__ == "__main__":
         # Attempt to remove webhook once before starting
         _delete_telegram_webhook()
         start_scheduler_once()
+
+        # Pre-seed R2-DOG2 sticker pack in background so it doesn't block startup.
+        # Stickers are stored persistently in stickers_vault.json and only fetched once.
+        def _seed_stickers_bg():
+            # R2-DOG2: 27 animated robot dog stickers — seed under robot + cool + happy categories
+            seeded = seed_sticker_pack("R2-DOG2", default_mood="robot", extra_moods=["cool", "happy", "cute"])
+            # Also try the Telegram pack names with different cases just in case
+            if seeded == 0:
+                seed_sticker_pack("r2dog2", default_mood="robot", extra_moods=["cool", "happy", "cute"])
+            total = sum(len(v) for v in sticker_vault.data.get("stickers", {}).values())
+            logger.info(f"[StickerSeed] Vault now has {total} stickers across all moods")
+
+        threading.Thread(target=_seed_stickers_bg, daemon=True, name="StickerSeeder").start()
+        logger.info("[StickerSeed] Background seeder started for R2-DOG2 pack")
 
         # Run polling in a loop so transient 409/other errors try to self-heal.
         while True:

@@ -864,7 +864,7 @@ def safe_send_message(chat_id, text, **kwargs):
                 logger.error(f"Plain text send error: {e2}")
                 return None
 
-    chunks = split_text_for_telegram(text, max_len=3600)
+    chunks = split_text_for_telegram(text, max_len=4000)
     if len(chunks) == 1:
         return _send_once(clean_markdown(chunks[0]), kwargs)
 
@@ -872,7 +872,7 @@ def safe_send_message(chat_id, text, **kwargs):
     total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
         # Add part marker only for multi-chunk responses.
-        payload = clean_markdown(f"[Part {i}/{total}]\n{chunk}")
+        payload = clean_markdown(f"📄 *Part {i} of {total}*\n{chunk}")
         chunk_kwargs = dict(kwargs)
         # Avoid repeating buttons/markup on every chunk.
         if i != total:
@@ -1019,7 +1019,7 @@ def set_response_length(user_id, value):
 
 def get_response_max_tokens(user_id):
     length = get_response_length(user_id)
-    return {"short": 240, "medium": 450, "long": 900}.get(length, 450)
+    return {"short": 500, "medium": 1600, "long": 3000}.get(length, 1600)
 
 def send_response_length_panel(chat_id):
     current = get_response_length(chat_id)
@@ -2760,11 +2760,10 @@ RESPONSE_LENGTH_KEY = "response_length"
 def build_main_reply_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.row(MENU_CHAT, MENU_DRAW)
-    kb.row(MENU_STICKERS, MENU_GAMES)
-    kb.row(MENU_SEARCH, MENU_CODE)
-    kb.row(MENU_DOC, MENU_VOICE)
-    kb.row(MENU_SETTINGS, MENU_HELP)
-    kb.row(MENU_RESET)
+    kb.row(MENU_SEARCH, MENU_GAMES)
+    kb.row(MENU_CODE, MENU_DOC)
+    kb.row(MENU_VOICE, MENU_SETTINGS)
+    kb.row(MENU_HELP, MENU_RESET)
     return kb
 
 def set_pending_mode(user_id, mode):
@@ -2776,12 +2775,11 @@ def get_pending_mode(user_id):
 def send_welcome_panel(chat_id):
     welcome_msg = """🔴 *Artovix 2026 Masterpiece* ✨
 
-Welcome to your ultimate AI companion! I am equipped with cutting-edge intelligence, creative art, stickers, emojis, interactive games, coding expertise, and a warm heart! 💖
+Welcome to your ultimate AI companion! I am equipped with cutting-edge intelligence, creative art, interactive games, coding expertise, and a warm heart! 💖
 
 ✨ *What I can do for you:*
 • 🔴 *Chat:* Warm, smart, friendly conversations
 • 🎨 *Draw:* Stunning AI image generation
-• 🎭 *Stickers & Emojis:* Send & make custom stickers, emoji art, reactions
 • 🎲 *Games:* Play live animated dice, darts, basketball, slots, & bowling!
 • 💻 *Code:* Expert coding, debugging, and scripts
 • 📄 *Doc:* Upload PDFs/files and ask questions
@@ -3271,13 +3269,6 @@ def handle_help(message):
 `/askdoc [question]` - Upload documents & ask questions
 `/summarize [text]` - Instant smart summary
 
-*🎭 Stickers & Emojis*
-`/sticker [mood]` - Send a sticker (happy, love, cool, cat, etc.)
-`/stickers` - Open the Sticker & Emoji station
-`/makesticker [prompt]` - Generate a custom AI vector sticker
-`/emoji [text]` - Turn text into expressive emoji art
-• Send ANY sticker to me to teach me new stickers! 💖
-
 *🎲 Interactive Games*
 `/game` or `/dice` - Roll animated dice
 `/dart` - Play dart challenge
@@ -3487,54 +3478,18 @@ def handle_model_command(message):
 # ============================================================================
 @bot.message_handler(commands=['sticker', 'stickers'])
 def handle_sticker_command(message):
-    try:
-        if not ensure_channel_access(message):
-            return
-        parts = message.text.split(maxsplit=1) if message.text else []
-        if len(parts) > 1:
-            query = parts[1].strip()
-            mood = sticker_vault.detect_mood_from_text(query)
-            sticker = sticker_vault.get_random_sticker(mood)
-            if sticker:
-                safe_send_sticker(message.chat.id, sticker)
-            else:
-                emoji_art = sticker_vault.get_random_emoji_art(mood)
-                safe_send_message(message.chat.id, emoji_art)
-            safe_send_message(
-                message.chat.id,
-                f"✨ Here is your *{mood.upper()}* sticker! Want more? Tap below:",
-                reply_markup=build_sticker_replay_markup(mood)
-            )
-            return
-
-        send_sticker_station_panel(message.chat.id)
-    except Exception as e:
-        logger.error(f"Sticker command error: {e}")
-        safe_send_message(message.chat.id, "❌ Could not open sticker station.")
+    # Sticker feature removed — only greeting stickers remain
+    pass
 
 @bot.message_handler(commands=['makesticker', 'stickergen'])
 def handle_makesticker_command(message):
-    try:
-        if not ensure_channel_access(message):
-            return
-        parts = message.text.split(maxsplit=1) if message.text else []
-        prompt = parts[1].strip() if len(parts) > 1 else ""
-        generate_ai_sticker(message.chat.id, prompt)
-    except Exception as e:
-        logger.error(f"Make sticker command error: {e}")
-        safe_send_message(message.chat.id, "❌ Sticker generation failed. Try again!")
+    # Sticker generation feature removed
+    pass
 
 @bot.message_handler(commands=['emoji', 'emojify'])
 def handle_emoji_command(message):
-    try:
-        if not ensure_channel_access(message):
-            return
-        parts = message.text.split(maxsplit=1) if message.text else []
-        text = parts[1].strip() if len(parts) > 1 else ""
-        handle_emojify_text(message.chat.id, text)
-    except Exception as e:
-        logger.error(f"Emoji command error: {e}")
-        safe_send_message(message.chat.id, "❌ Failed to transform emoji text.")
+    # Emoji feature removed
+    pass
 
 @bot.message_handler(commands=['game', 'games'])
 def handle_games_command(message):
@@ -4500,9 +4455,6 @@ def handle_all_messages(message):
         if text == MENU_VOICE:
             send_voice_mode_panel(message.chat.id)
             return
-        if text == MENU_STICKERS:
-            send_sticker_station_panel(message.chat.id)
-            return
         if text == MENU_GAMES:
             send_games_panel(message.chat.id)
             return
@@ -4518,26 +4470,14 @@ def handle_all_messages(message):
             handle_reset(message)
             return
 
-        # Natural sticker request in chat (e.g., "send me a cute cat sticker")
-        is_stk, stk_mood = is_natural_sticker_request(text)
-        if is_stk:
-            sticker = sticker_vault.get_random_sticker(stk_mood)
-            friendly_lines = [
-                f"✨ Here is a special *{stk_mood.upper()}* sticker for you! 💖",
-                f"🚀 Coming right up! Enjoy this awesome sticker! ✨",
-                f"🌟 Specially picked for you with positive vibes! 🎉",
-            ]
-            safe_send_message(message.chat.id, random.choice(friendly_lines))
-            if sticker:
-                safe_send_sticker(message.chat.id, sticker)
-            else:
-                safe_send_message(message.chat.id, sticker_vault.get_random_emoji_art(stk_mood))
-            safe_send_message(
-                message.chat.id,
-                "Want another one? Tap below:",
-                reply_markup=build_sticker_replay_markup(stk_mood)
-            )
-            return
+        # Greeting sticker: send one sticker only when user sends a casual greeting
+        _greeting_words = {"hi", "hello", "hey", "hiya", "howdy", "sup", "yo", "greetings",
+                           "good morning", "good evening", "good afternoon", "hi there", "hey there"}
+        _t_low = text.strip().lower().rstrip("!.,?")
+        if any(_t_low == g or _t_low.startswith(g + " ") for g in _greeting_words) and len(text) < 35:
+            _greeting_sticker = sticker_vault.get_random_sticker("happy")
+            if _greeting_sticker:
+                safe_send_sticker(message.chat.id, _greeting_sticker)
 
         # Natural game request in chat (e.g., "let's play dice", "play darts")
         is_gm, gm_type = is_natural_game_request(text)
@@ -4612,14 +4552,16 @@ def handle_all_messages(message):
                 )
                 reply_raw = strip_thinking_process(part.strip()) if part else ""
 
-                # Only auto-continue if response was legitimately truncated by token limit and is substantial
-                if finish_reason == "length" and reply_raw and len(reply_raw) > 200:
+                # Auto-continue up to 3 more times if the model was truncated mid-thought
+                for _continuation in range(3):
+                    if not (finish_reason == "length" and reply_raw and len(reply_raw) > 200):
+                        break
                     local_messages.append({"role": "assistant", "content": reply_raw})
                     local_messages.append({
                         "role": "user",
-                        "content": "Please continue seamlessly."
+                        "content": "Please continue seamlessly from where you stopped."
                     })
-                    cont_part, _, _ = groq_chat_with_fallback(
+                    cont_part, _, finish_reason = groq_chat_with_fallback(
                         messages=local_messages,
                         temperature=0.7,
                         max_tokens=max_tokens_for_user,
@@ -4628,6 +4570,8 @@ def handle_all_messages(message):
                     if cont_part:
                         cont_clean = strip_thinking_process(cont_part.strip())
                         reply_raw = f"{reply_raw}\n\n{cont_clean}".strip()
+                    else:
+                        break
 
             reply = clean_markdown(reply_raw)
         

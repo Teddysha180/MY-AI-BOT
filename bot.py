@@ -814,6 +814,37 @@ def ensure_copyable_code_blocks(text, preferred_language="python"):
 
     return output
 
+class KeepTyping:
+    """Sends continuous Telegram typing actions in a background thread until finished."""
+    def __init__(self, chat_id, action="typing", interval=4.0):
+        self.chat_id = chat_id
+        self.action = action
+        self.interval = interval
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def __enter__(self):
+        try:
+            bot.send_chat_action(self.chat_id, self.action)
+        except Exception:
+            pass
+
+        def _loop():
+            while not self.stop_event.wait(self.interval):
+                try:
+                    bot.send_chat_action(self.chat_id, self.action)
+                except Exception:
+                    pass
+
+        self.thread = threading.Thread(target=_loop, daemon=True, name=f"Typing-{self.chat_id}")
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=0.2)
+
 def safe_send_message(chat_id, text, **kwargs):
     """Safely send a message with error handling"""
     # Strip any leaked chain-of-thought BEFORE chunking so it doesn't appear in any part
@@ -1886,8 +1917,8 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
                 "meta/llama-3.3-70b-instruct",
-                "meta/llama-3.1-70b-instruct",
                 "meta/llama-3.1-8b-instruct",
+                "meta/llama-3.1-70b-instruct",
                 *featured_nims,
                 # Broad NVIDIA NIM fallbacks (Nov 2026)
                 "meta/llama-3.2-3b-instruct",
@@ -1927,7 +1958,8 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                         model=mod,
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=max_tokens
+                        max_tokens=max_tokens,
+                        timeout=12.0
                     )
                     choice = response.choices[0] if response and response.choices else None
                     # Some NVIDIA models (e.g. nemotron) may return content in
@@ -1951,6 +1983,12 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                         logger.warning(
                             f"{provider_name.capitalize()} model '{mod}' gone/decommissioned (410/404). Marked dead."
                         )
+                        break
+
+                    # If model timed out (>12s), failover immediately to next model without wasting more time
+                    err_txt = str(e).lower()
+                    if "timed out" in err_txt or "timeout" in err_txt:
+                        logger.warning(f"{provider_name.capitalize()} model '{mod}' timed out after 12s. Fast-failing to next candidate.")
                         break
 
                     should_retry = is_transient_ai_error(e) and attempt < GROQ_TRANSIENT_RETRIES
@@ -2915,60 +2953,59 @@ def handle_search(message):
             )
             return
         
-        # Show searching indicator
-        bot.send_chat_action(message.chat.id, 'typing')
+        # Show searching indicator continuously while processing
+        with KeepTyping(message.chat.id, 'typing'):
+            # Create search prompt with enhanced instructions
+            search_prompt = f"""Search Query: {query}
         
-        # Create search prompt with enhanced instructions
-        search_prompt = f"""Search Query: {query}
+As a Knowledge Specialist in 2026, provide a comprehensive search result for the query above.
         
-        As a Knowledge Specialist in 2026, provide a comprehensive search result for the query above.
+Structure your response as follows:
+🌐 [Topic Overview]
+Brief summary of the most current information.
         
-        Structure your response as follows:
-        🌐 [Topic Overview]
-        Brief summary of the most current information.
+📌 [Key Facts & Developments]
+- Detail 1
+- Detail 2
         
-        📌 [Key Facts & Developments]
-        - Detail 1
-        - Detail 2
+🛠️ [Practical Insights/Applications]
+How this information is used or its significance.
         
-        🛠️ [Practical Insights/Applications]
-        How this information is used or its significance.
+💡 [Expert Tip]
+A unique insight or recommendation.
         
-        💡 [Expert Tip]
-        A unique insight or recommendation.
+Keep it professional, accurate, and formatted for a mobile chat interface."""
         
-        Keep it professional, accurate, and formatted for a mobile chat interface."""
-        
-        try:
-            if not (nvidia_client or groq_client):
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable search features.")
-                return
+            try:
+                if not (nvidia_client or groq_client):
+                    safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable search features.")
+                    return
 
-            # Get response from AI backend using dedicated search/research model
-            content, _, _ = ai_chat_with_fallback(
-                messages=[{"role": "user", "content": search_prompt}],
-                temperature=0.7,
-                max_tokens=600,
-                model=get_purpose_model("search", message.chat.id)
-            )
+                # Get response from AI backend using dedicated search/research model
+                content, _, _ = ai_chat_with_fallback(
+                    messages=[{"role": "user", "content": search_prompt}],
+                    temperature=0.7,
+                    max_tokens=600,
+                    model=get_purpose_model("search", message.chat.id)
+                )
 
-            answer = clean_markdown(content)
+                answer = clean_markdown(content)
 
-            # Send result
-            result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
-            save_last_ai_reply(message.chat.id, result_text)
-            send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
+                # Send result
+                result_text = f"🔍 *Search Results:* {query}\n\n{answer}\n\n✨ *Source:* Artovix AI Knowledge Base"
+                save_last_ai_reply(message.chat.id, result_text)
+                send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
 
-        except Exception as api_error:
-            logger.error(f"Search API error: {api_error}")
-            safe_send_message(
-                message.chat.id,
-                f"🔍 *Search:* {query}\n\n"
-                f"I'll help you with that! Here's what I know:\n\n"
-                f"Please try rephrasing your question or ask me directly about the topic."
-            )
+            except Exception as api_error:
+                logger.error(f"Search API error: {api_error}")
+                safe_send_message(
+                    message.chat.id,
+                    f"🔍 *Search:* {query}\n\n"
+                    f"I'll help you with that! Here's what I know:\n\n"
+                    f"Please try rephrasing your question or ask me directly about the topic."
+                )
         
-        analytics.log_request(message.chat.id, len(query.split()) * 30, "search")
+            analytics.log_request(message.chat.id, len(query.split()) * 30, "search")
         
     except Exception as e:
         logger.error(f"Search command error: {e}")
@@ -3007,12 +3044,11 @@ def handle_code(message):
             )
             return
         
-        bot.send_chat_action(message.chat.id, 'typing')
-        
-        # Create code analysis prompt
-        if '```' in code_text:
-            # It's code in a block
-            code_prompt = f"""Analyze this code and provide:
+        with KeepTyping(message.chat.id, 'typing'):
+            # Create code analysis prompt
+            if '```' in code_text:
+                # It's code in a block
+                code_prompt = f"""Analyze this code and provide:
 
 1. What it does
 2. Any issues or bugs
@@ -3026,9 +3062,9 @@ OUTPUT FORMAT RULES:
 
 Code:
 {code_text}"""
-        else:
-            # It's a question
-            code_prompt = f"""Answer this programming question: {code_text}
+            else:
+                # It's a question
+                code_prompt = f"""Answer this programming question: {code_text}
 
 Provide:
 1. Clear explanation
@@ -3040,45 +3076,45 @@ OUTPUT FORMAT RULES:
 - Always include at least one copyable code block.
 - Use triple backticks with a language tag.
 - Keep code practical and runnable."""
-        
-        try:
-            if not (nvidia_client or groq_client):
-                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable code analysis.")
-                return
+            
+            try:
+                if not (nvidia_client or groq_client):
+                    safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable code analysis.")
+                    return
 
-            content, _, _ = ai_chat_with_fallback(
-                messages=[{"role": "user", "content": code_prompt}],
-                temperature=0.3,
-                max_tokens=1200,
-                model=get_purpose_model("code", message.chat.id)
-            )
-
-            preferred_language = detect_code_language(code_text)
-            analysis = ensure_copyable_code_blocks(
-                content,
-                preferred_language=preferred_language
-            )
-            analysis = clean_markdown(analysis)
-
-            result_text = f"💻 *Code Solution:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
-            save_last_ai_reply(message.chat.id, result_text)
-            send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
-
-        except Exception as api_error:
-            logger.error(f"Code API error: {api_error}")
-            err_msg = str(api_error)
-            if message.chat.id in ADMIN_USER_IDS:
-                safe_send_message(
-                    message.chat.id,
-                    f"⚠️ *Code Error (Admin Info):*\n`{err_msg[:400]}`"
+                content, _, _ = ai_chat_with_fallback(
+                    messages=[{"role": "user", "content": code_prompt}],
+                    temperature=0.3,
+                    max_tokens=1200,
+                    model=get_purpose_model("code", message.chat.id)
                 )
-            else:
-                safe_send_message(
-                    message.chat.id,
-                    "💻 *Code generation encountered a temporary glitch.* Please try again!"
+
+                preferred_language = detect_code_language(code_text)
+                analysis = ensure_copyable_code_blocks(
+                    content,
+                    preferred_language=preferred_language
                 )
-        
-        analytics.log_request(message.chat.id, len(code_text.split()), "code_analysis")
+                analysis = clean_markdown(analysis)
+
+                result_text = f"💻 *Code Solution:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
+                save_last_ai_reply(message.chat.id, result_text)
+                send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
+
+            except Exception as api_error:
+                logger.error(f"Code API error: {api_error}")
+                err_msg = str(api_error)
+                if message.chat.id in ADMIN_USER_IDS:
+                    safe_send_message(
+                        message.chat.id,
+                        f"⚠️ *Code Error (Admin Info):*\n`{err_msg[:400]}`"
+                    )
+                else:
+                    safe_send_message(
+                        message.chat.id,
+                        "💻 *Code generation encountered a temporary glitch.* Please try again!"
+                    )
+            
+            analytics.log_request(message.chat.id, len(code_text.split()), "code_analysis")
         
     except Exception as e:
         logger.error(f"Code command error: {e}")
@@ -4350,38 +4386,37 @@ def handle_photo(message):
     try:
         if not ensure_channel_access(message):
             return
-        bot.send_chat_action(message.chat.id, 'typing')
-        
-        # Get highest resolution photo
-        file_id = message.photo[-1].file_id
-        file_info = bot.get_file(file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        
-        # Encode to base64
-        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-        
-        # Get caption or use default
-        prompt = message.caption if message.caption else "Describe this image in detail and tell me what you see."
-        
-        # Analyze with Vision
-        if not (nvidia_client or groq_client):
-            safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable vision features.")
-            return
+        with KeepTyping(message.chat.id, 'typing'):
+            # Get highest resolution photo
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            # Encode to base64
+            base64_image = base64.b64encode(downloaded_file).decode('utf-8')
+            
+            # Get caption or use default
+            prompt = message.caption if message.caption else "Describe this image in detail and tell me what you see."
+            
+            # Analyze with Vision
+            if not (nvidia_client or groq_client):
+                safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable vision features.")
+                return
 
-        vision_messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}",
+            vision_messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                            },
                         },
-                    },
-                ],
-            }
-        ]
+                    ],
+                }
+            ]
 
         analysis_raw, used_model = ai_vision_with_fallback(
             messages=vision_messages,
@@ -4544,8 +4579,6 @@ def handle_all_messages(message):
             {"role": "user", "content": message.text}
         ]
         
-        bot.send_chat_action(message.chat.id, 'typing')
-        
         try:
             if not (nvidia_client or groq_client):
                 safe_send_message(message.chat.id, "🔌 *AI backend not configured.*\nSet `NVIDIA_API_KEY` or `GROQ_API_KEY` in your .env to enable chat responses.")
@@ -4569,33 +4602,35 @@ def handle_all_messages(message):
             chat_purpose = "code" if is_coding else "chat"
             selected_model = get_purpose_model(chat_purpose, message.chat.id)
 
-            part, used_model, finish_reason = groq_chat_with_fallback(
-                messages=local_messages,
-                temperature=0.7,
-                max_tokens=max_tokens_for_user,
-                model=selected_model
-            )
-            reply_raw = strip_thinking_process(part.strip()) if part else ""
-
-            # Only auto-continue if response was legitimately truncated by token limit and is substantial
-            if finish_reason == "length" and reply_raw and len(reply_raw) > 200:
-                local_messages.append({"role": "assistant", "content": reply_raw})
-                local_messages.append({
-                    "role": "user",
-                    "content": "Please continue seamlessly."
-                })
-                cont_part, _, _ = groq_chat_with_fallback(
+            # Send continuous animated typing indicator until response is ready
+            with KeepTyping(message.chat.id, 'typing'):
+                part, used_model, finish_reason = groq_chat_with_fallback(
                     messages=local_messages,
                     temperature=0.7,
                     max_tokens=max_tokens_for_user,
                     model=selected_model
                 )
-                if cont_part:
-                    cont_clean = strip_thinking_process(cont_part.strip())
-                    reply_raw = f"{reply_raw}\n\n{cont_clean}".strip()
+                reply_raw = strip_thinking_process(part.strip()) if part else ""
+
+                # Only auto-continue if response was legitimately truncated by token limit and is substantial
+                if finish_reason == "length" and reply_raw and len(reply_raw) > 200:
+                    local_messages.append({"role": "assistant", "content": reply_raw})
+                    local_messages.append({
+                        "role": "user",
+                        "content": "Please continue seamlessly."
+                    })
+                    cont_part, _, _ = groq_chat_with_fallback(
+                        messages=local_messages,
+                        temperature=0.7,
+                        max_tokens=max_tokens_for_user,
+                        model=selected_model
+                    )
+                    if cont_part:
+                        cont_clean = strip_thinking_process(cont_part.strip())
+                        reply_raw = f"{reply_raw}\n\n{cont_clean}".strip()
 
             reply = clean_markdown(reply_raw)
-            
+        
             # Save to memory
             history.extend([
                 {"role": "user", "content": message.text},

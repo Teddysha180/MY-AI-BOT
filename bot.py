@@ -1099,16 +1099,21 @@ def get_purpose_model(purpose="chat", user_id=None):
         if p in {"code", "coding", "program", "debug"}:
             return "meta/llama-3.3-70b-instruct"
         elif p in {"search", "find", "research", "doc", "askdoc"}:
-            return "meta/llama-3.3-70b-instruct"
+            return "meta/llama-3.1-70b-instruct"
         elif p in {"vision", "image", "photo"}:
             return "meta/llama-3.2-11b-vision-instruct"
         elif p in {"agent", "tool", "sticker", "task"}:
-            return "nvidia/nemotron-3.5-lightning-30b-a3b"
+            return "meta/llama-3.3-70b-instruct"
         else:  # "chat", "general", greetings
             return "meta/llama-3.3-70b-instruct"
     else:
+        # Groq — fast verified models
         if purpose == "vision":
             return "llama-3.2-11b-vision-preview"
+        if purpose in {"code", "coding", "program", "debug"}:
+            return "llama-3.3-70b-versatile"
+        if purpose in {"search", "find", "research"}:
+            return "llama-3.3-70b-versatile"
         return "llama-3.3-70b-versatile"
 
 def set_user_chat_model(user_id, model_key):
@@ -1898,42 +1903,49 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
     last_error = None
     for provider_name, client in providers:
         if provider_name == "nvidia":
-            featured_nims = [
-                "nvidia/nemotron-3.5-super-vl-120b-a12b",
-                "deepseek-ai/deepseek-v4.1-flash",
-                "deepseek/deepseek-v4.1-flash",
-                "nvidia/nemotron-3-ultra-550b-a55b",
-                "nvidia/nemotron-3.5-lightning-30b-a3b",
-            ]
+            # NVIDIA NIM — verified working models (Nov 2026)
             candidates = [
                 model if (model and "/" in model) else None,
                 CHAT_MODEL if "/" in CHAT_MODEL else None,
+                # Meta Llama — always available on NIM
                 "meta/llama-3.3-70b-instruct",
-                "meta/llama-3.1-8b-instruct",
                 "meta/llama-3.1-70b-instruct",
-                *featured_nims,
-                # Broad NVIDIA NIM fallbacks (Nov 2026)
+                "meta/llama-3.1-8b-instruct",
                 "meta/llama-3.2-3b-instruct",
                 "meta/llama-3.2-1b-instruct",
-                "mistralai/mistral-nemo-12b-instruct",
+                # Mistral
                 "mistralai/mistral-7b-instruct-v0.3",
+                "mistralai/mistral-nemo-12b-instruct",
+                # Google
                 "google/gemma-3-12b-it",
+                "google/gemma-3-4b-it",
+                # Microsoft
                 "microsoft/phi-3-mini-128k-instruct",
+                "microsoft/phi-3-medium-128k-instruct",
                 CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
             ]
         elif provider_name == "pollinations":
             candidates = ["openai", "mistral", "qwen"]
         else:
+            # Groq — verified working models (Nov 2026)
             candidates = [
                 model if (model and "/" not in model) else None,
                 CHAT_MODEL if "/" not in CHAT_MODEL else None,
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "llama-3.1-70b-versatile",
-                "gemma2-9b-it",
-                "mixtral-8x7b-32768",
-                "llama3-70b-8192",
-                "llama3-8b-8192",
+                # Primary fast models
+                "llama-3.3-70b-versatile",          # Best quality, large context
+                "llama-3.1-8b-instant",              # Fastest
+                "llama-3.1-70b-versatile",           # High quality fallback
+                # Secondary models
+                "llama3-groq-70b-8192-tool-use-preview",
+                "llama3-groq-8b-8192-tool-use-preview",
+                "gemma2-9b-it",                      # Google Gemma 2 — fast & reliable
+                "gemma-7b-it",
+                "mixtral-8x7b-32768",                # Mistral — wide context
+                # Additional fallbacks
+                "llama-3.2-90b-text-preview",
+                "llama-3.2-11b-text-preview",
+                "llama-3.2-3b-preview",
+                "llama-3.2-1b-preview",
                 CHAT_MODEL_FALLBACK if "/" not in CHAT_MODEL_FALLBACK else None,
                 CHAT_MODEL_CURRENT if "/" not in CHAT_MODEL_CURRENT else None,
             ]
@@ -5027,13 +5039,13 @@ def handle_all_messages(message):
                         "🔐 *AI key permission issue detected.*\n\n"
                         "If using NVIDIA, ensure your key has **'Public API Endpoints'** enabled on build.nvidia.com, or check `NVIDIA_API_KEY`."
                     )
-                elif "model" in err and (
-                    status_code in {400, 404}
-                    or any(term in err for term in ("not found", "decommissioned", "not available", "unsupported"))
-                ):
+                elif status_code in {404, 400} or any(term in err for term in (
+                    "not found", "decommissioned", "not available", "unsupported",
+                    "404", "model_not_found", "does not exist", "no such model"
+                )):
                     user_msg = (
-                        "🧠 *Model temporarily unavailable.*\n\n"
-                        "I switched models automatically. Please try your message again."
+                        "🔄 *AI model switching...*\n\n"
+                        "One moment — trying a faster model for you. Please send your message again."
                     )
                 elif status_code == 413 or any(term in err for term in ("context length", "maximum context", "prompt is too long", "request too large")):
                     user_msg = (

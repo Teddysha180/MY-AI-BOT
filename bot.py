@@ -224,21 +224,12 @@ if GROQ_KEY:
     else:
         print("⚠️ groq package not installed; Groq client cannot initialize.")
 
-# Pollinations.ai — always-on free text API, no key required
-if OpenAI:
-    try:
-        pollinations_client = OpenAI(
-            base_url="https://text.pollinations.ai/openai",
-            api_key="pollinations",
-            timeout=30.0
-        )
-        print("✅ Pollinations.ai free text client initialized.")
-    except Exception as e:
-        print(f"⚠️ Pollinations.ai client init warning: {e}")
-        pollinations_client = None
+# Pollinations.ai text API disabled — rate-limited (1 req/45s per IP).
+# Pollinations is ONLY used for image generation, not text responses.
+pollinations_client = None
 
 if not nvidia_client and not groq_client:
-    print("⚠️ Neither NVIDIA_API_KEY nor GROQ_API_KEY is configured — using Pollinations.ai free fallback.")
+    print("⚠️ Neither NVIDIA_API_KEY nor GROQ_API_KEY is configured — no AI text backend available.")
 
 if BOT_TOKEN:
     try:
@@ -1884,8 +1875,10 @@ def is_fatal_model_error(exc: Exception) -> bool:
 is_transient_ai_error = is_transient_groq_error
 
 def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
-    """Try primary and fallback chat models across Groq, NVIDIA NIM, and Pollinations before failing."""
-    if not nvidia_client and not groq_client and not pollinations_client:
+    """Try primary and fallback chat models across Groq and NVIDIA NIM before failing.
+    NOTE: Pollinations text API is intentionally excluded — it has a 45s/req rate limit.
+    """
+    if not nvidia_client and not groq_client:
         raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
 
     providers = []
@@ -1900,8 +1893,7 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
         if nvidia_client:
             providers.append(("nvidia", nvidia_client))
 
-    if pollinations_client:
-        providers.append(("pollinations", pollinations_client))
+    # Pollinations text is NOT added here — image-only service.
 
     last_error = None
     for provider_name, client in providers:
@@ -5019,6 +5011,11 @@ def handle_all_messages(message):
                     user_msg = (
                         "🔑 *NVIDIA API credits exhausted.*\n\n"
                         "Please get a free **Groq API key** at console.groq.com and add it as `GROQ_API_KEY` in your Render dashboard."
+                    )
+                elif status_code == 402 or any(term in err for term in ("402", "free limit reached", "payment required")):
+                    user_msg = (
+                        "⏳ *AI free tier limit reached.*\n\n"
+                        "Please wait a moment and try again."
                     )
                 elif status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
                     user_msg = (

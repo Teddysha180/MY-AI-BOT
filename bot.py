@@ -1854,7 +1854,20 @@ def is_transient_groq_error(exc: Exception) -> bool:
 def is_fatal_model_error(exc: Exception) -> bool:
     txt = str(exc or "").lower()
     status_code = getattr(exc, "status_code", None)
-    return status_code in {404, 410} or any(marker in txt for marker in ["404", "not found", "decommissioned", "not available", "unsupported model"])
+    # 404/410 = model gone; 400 with decommission/unsupported message = also dead
+    if status_code in {404, 410}:
+        return True
+    dead_markers = [
+        "404", "not found", "decommissioned", "not available",
+        "unsupported model", "no longer supported", "has been removed",
+        "model_not_found", "does not exist", "no such model",
+    ]
+    if any(marker in txt for marker in dead_markers):
+        return True
+    # Groq 400 "decommissioned" comes as BadRequestError with status 400
+    if status_code == 400 and any(m in txt for m in ("decommission", "no longer supported", "has been removed")):
+        return True
+    return False
 
 is_transient_ai_error = is_transient_groq_error
 
@@ -1864,6 +1877,8 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
         raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY in Render environment variables.")
 
     last_error = None
+    # Per-call dead set: models that errored THIS call (don't skip on retry of same model across calls)
+    call_dead = set()
 
     # ── Helper: try one provider's model list ─────────────────────────────────
     def _try_provider(provider_name, client, raw_candidates):
@@ -1871,7 +1886,7 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
         seen = set()
         models_to_try = [m for m in raw_candidates
                          if m and m not in seen and not seen.add(m)
-                         and (provider_name, m) not in _DEAD_MODELS]
+                         and (provider_name, m) not in call_dead]
 
         for mod in models_to_try:
             # Key-level error: skip entire provider immediately
@@ -1907,9 +1922,10 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
                     sc = getattr(e, "status_code", None)
                     etxt = str(e).lower()
 
-                    # Fatal model error (404 / model gone) → mark dead, try next model
+                    # Fatal model error (404 / model gone / decommissioned) → mark dead, try next model
                     if is_fatal_model_error(e):
                         _DEAD_MODELS.add((provider_name, mod))
+                        call_dead.add((provider_name, mod))
                         logger.warning(f"{provider_name} model '{mod}' fatal ({sc}). Marked dead.")
                         break  # next model
 
@@ -1956,15 +1972,13 @@ def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None)
 
     # ── Phase 2: Groq (silent fallback) ──────────────────────────────────────
     if groq_client:
-        # Reset last_error so Groq key-level check starts fresh
-        last_error = None
+        # DO NOT reset last_error here — keep it so final raise has real error
         groq_candidates = [
             model if (model and "/" not in model) else None,
             "llama-3.3-70b-versatile",
             "llama-3.1-70b-versatile",
             "llama-3.1-8b-instant",
             "gemma2-9b-it",
-            "mixtral-8x7b-32768",
         ]
         result = _try_provider("groq", groq_client, groq_candidates)
         if result:
@@ -4972,18 +4986,15 @@ def handle_all_messages(message):
                     # All other errors (401, 402, 403, 404, 410, credits, quota, etc.)
                     # → silent friendly message, no "switching engine", no raw errors
                     user_msg = "⚠️ Please try again in a moment."
-                # Admin-only: append real error for debugging
+                # Admin-only: show real error for debugging (plain text, no markdown to avoid parse errors)
                 actor_id = getattr(getattr(message, "from_user", None), "id", None) or message.chat.id
                 if actor_id in MAIN_ADMIN_IDS:
-                    user_msg = (
-                        f"⚠️ *AI Error (admin debug):*\n\n"
-                        f"`{str(api_error)[:400]}`"
-                    )
-                else:
-                    pass  # already set above
+                    err_preview = str(api_error)[:400].replace("`", "'").replace("*", "").replace("_", "")
+                    user_msg = f"⚠️ AI Error (admin debug):\n\n{err_preview}"
                 safe_send_message(
                     message.chat.id,
-                    user_msg
+                    user_msg,
+                    parse_mode=None
                 )
             except Exception:
                 logger.error("Failed to send fallback message after chat error.")

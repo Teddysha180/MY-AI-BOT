@@ -597,13 +597,10 @@ Remember: You are here to brighten the user's day and solve any problem with mas
 def strip_thinking_process(text):
     """Strip out leaked internal chain-of-thought or thinking blocks from reasoning models.
     
-    Catches:
-    - <think>...</think> XML blocks
-    - 'Here's a thinking process:' and similar headers
-    - Step-by-step analysis blocks (1. Analyze..., 2. Identify..., 3. Formulate...)
-    - Meta-reasoning and internal monologues (e.g., 'User said "hi", so I'll reply in English',
-      'Need to start immediately with...', 'Let's make sure I don't output...', 'guidelines say...',
-      'Wait, I need to figure out...', 'Looking at the conversation...')
+    Guarantees:
+    - Never strips or modifies fenced code blocks (```...```).
+    - Only removes initial thinking monologues at the start of a response.
+    - Preserves all valid explanations, bullet points, and code examples.
     """
     if not text:
         return text
@@ -613,7 +610,7 @@ def strip_thinking_process(text):
     # 0. Remove [Part N/M] prefix lines added in multi-chunk paths
     cleaned = re.sub(r'^\[Part\s+\d+/\d+\]\s*\n?', '', cleaned).strip()
 
-    # 1. Remove <think>...</think> blocks
+    # 1. Remove <think>...</think> XML blocks
     cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned, flags=re.IGNORECASE).strip()
     if '<think>' in cleaned.lower():
         parts_split = re.split(r'</think>', cleaned, flags=re.IGNORECASE)
@@ -622,7 +619,7 @@ def strip_thinking_process(text):
         else:
             cleaned = re.sub(r'<think>[\s\S]*', '', cleaned, flags=re.IGNORECASE).strip()
 
-    # 2. Check for explicit thinking headers
+    # 2. Check for explicit thinking headers (e.g. "Here's a thinking process:", "Thinking Process:")
     THINKING_HEADERS = re.compile(
         r"(?:^|\n)\s*(?:"
         r"Here'?s\s+(?:a\s+)?(?:my\s+)?thinking\s+process\b[:\s]*"
@@ -645,41 +642,49 @@ def strip_thinking_process(text):
         else:
             cleaned = (before + "\n\n" + after_header).strip() if before else after_header
 
-    # 3. Detect and filter paragraph-level meta-reasoning/monologues
-    META_REASONING_PATTERNS = [
-        r'^\s*User\s+(?:said|says|asked|typed|sent)\s+["\'].*?["\']\s+in\s+\w+',
-        r'^\s*\d+[\.\)]\s*(?:Analyze|Identify|Check|Formulate|Draft|Determine|Evaluate|Understand|Plan|Review|Consider|Note|Remember|Output|Input|Format|Tone|Persona|Role|Goal)',
-        r'^\s*(?:Structure|Example|Guidelines|Personality|Persona|Constraints|Safety|Tone|Audience|Goal|Language|Format|Output|Input)\s*:\s*(?:Maybe|Need|Should|Could|I\'ll|Let|The|Keep|Use|Start|A\s+)',
-        r'^\s*(?:Need\s+to\s+start|Let\'s\s+make\s+sure|I\'ll\s+do\s+something|I\'ll\s+just\s+output|I\s+need\s+to\s+output|I\s+should\s+reply)',
-        r'^\s*(?:Wait,?\s+I\s+need\s+to|Looking\s+at\s+the\s+conversation|Actually,?\s+re[\-\s]reading|Actually,?\s+looking|So\s+I\s+must\s+have\s+messed\s+up)',
-        r'^\s*(?:But\s+guidelines\s+say|Per\s+guidelines|According\s+to\s+(?:my\s+)?guidelines|The\s+system\s+prompt\s+says)',
-        r'^\s*(?:Since\s+it\'s\s+just\s+a\s+["\']?hi["\']?,?\s+maybe\s+I\s+can)',
-        r'^\s*I\s+think\s+what\s+happened\s+is\s*:',
-        r'^\s*I\s+think\s+the\s+intent\s+is\s*:',
-    ]
-    meta_regex = re.compile('|'.join(f'(?:{p})' for p in META_REASONING_PATTERNS), re.IGNORECASE)
+    # 3. Strip leading monologue lines if the response starts with meta-reasoning
+    # e.g. "User said 'hi' in English, so I'll reply in English."
+    # We only check leading lines before any real content or code begins!
+    LEADING_MONOLOGUE = re.compile(
+        r'^(?:'
+        r'User\s+said\s+["\'].*?["\']\s+in\s+\w+,?\s+so\s+I\'?ll\s+reply'
+        r'|\d+[\.\)]\s*(?:Analyze\s+User\s+Input|Identify\s+(?:the\s+)?(?:Core\s+Task|Persona|Role)|Check\s+Guidelines|Formulate\s+Response)'
+        r'|Need\s+to\s+start\s+immediately\s+with'
+        r'|Let\'s\s+make\s+sure\s+I\s+don\'t\s+output\s+any\s+["\']?thinking\s+process'
+        r'|Wait,?\s+I\s+need\s+to\s+figure\s+out\s+["\']?where\s+I\s+stopped'
+        r'|Looking\s+at\s+the\s+conversation\s*:'
+        r'|Actually,?\s+re[\-\s]reading\s+the\s+(?:very\s+)?first\s+part'
+        r'|So\s+I\s+must\s+have\s+messed\s+up'
+        r'|Per\s+guidelines,?\s+I\s+should'
+        r'|I\s+think\s+what\s+happened\s+is\s*:'
+        r'|I\s+think\s+the\s+intent\s+is\s*:'
+        r')',
+        re.IGNORECASE
+    )
 
-    # Split into paragraphs
-    paras = cleaned.split("\n\n")
-    clean_paras = []
-    for p in paras:
-        p_strip = p.strip()
-        if not p_strip:
+    lines = cleaned.splitlines()
+    first_good = 0
+    for idx, line in enumerate(lines):
+        line_s = line.strip()
+        if not line_s:
+            first_good = idx + 1
             continue
-        first_line = p_strip.splitlines()[0].strip()
-        if meta_regex.search(first_line) or meta_regex.search(p_strip):
+        if "```" in line_s:
+            # Code block starts! Never strip code!
+            break
+        if LEADING_MONOLOGUE.search(line_s):
+            first_good = idx + 1
             continue
-        if re.match(r'^\s*(?:Structure|Example|Wait|Note|Tip|Idea)\s*:', p_strip, re.IGNORECASE) and not clean_paras:
+        if first_good > 0 and re.match(r'^\s*(?:Structure|Example|Note|Tip|Wait)\s*:\s*(?:Maybe|Need|Should|Could|I\'ll|Let|Keep)', line_s, re.IGNORECASE):
+            first_good = idx + 1
             continue
-        clean_paras.append(p_strip)
+        break
 
-    if clean_paras:
-        cleaned = "\n\n".join(clean_paras).strip()
-    else:
-        cleaned = "Hey there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
+    if first_good > 0:
+        cleaned = "\n".join(lines[first_good:]).strip()
 
-    # 4. Final safety check: if meta-thinking strings still survived
-    if re.search(r'(?:guidelines\s+say|Formulate\s+Response|Analyze\s+User\s+Input|Identify\s+the\s+Core\s+Task|thinking\s+process)', cleaned, re.IGNORECASE):
+    # If completely empty after stripping monologue, fallback
+    if not cleaned:
         cleaned = "Hey there! 😊✨ How can I help you today? Let me know what you'd like to do! 🚀"
 
     return cleaned
@@ -819,12 +824,11 @@ def safe_send_message(chat_id, text, **kwargs):
             return bot.send_message(chat_id, payload, **local_kwargs)
         except Exception as e:
             logger.error(f"Send message error: {e}")
-            # Try without markdown for this chunk
+            # If Markdown parsing fails, retry as plain text without corrupting formatting
             try:
-                text_plain = payload.replace('*', '').replace('_', '').replace('`', '').replace('~', '')
                 fallback_kwargs = dict(local_kwargs)
                 fallback_kwargs.pop("parse_mode", None)
-                return bot.send_message(chat_id, text_plain, **fallback_kwargs)
+                return bot.send_message(chat_id, payload, **fallback_kwargs)
             except Exception as e2:
                 logger.error(f"Plain text send error: {e2}")
                 return None
@@ -1071,11 +1075,11 @@ def get_purpose_model(purpose="chat", user_id=None):
     if AI_PROVIDER == "nvidia" or (NVIDIA_API_KEY and not GROQ_KEY):
         p = (purpose or "chat").lower().strip()
         if p in {"code", "coding", "program", "debug"}:
-            return "nvidia/nemotron-3.5-super-vl-120b-a12b"
+            return "meta/llama-3.3-70b-instruct"
         elif p in {"search", "find", "research", "doc", "askdoc"}:
-            return "nvidia/nemotron-3-ultra-550b-a55b"
+            return "meta/llama-3.3-70b-instruct"
         elif p in {"vision", "image", "photo"}:
-            return "nvidia/nemotron-3.5-super-vl-120b-a12b"
+            return "meta/llama-3.2-11b-vision-instruct"
         elif p in {"agent", "tool", "sticker", "task"}:
             return "nvidia/nemotron-3.5-lightning-30b-a3b"
         else:  # "chat", "general", greetings
@@ -3045,7 +3049,7 @@ OUTPUT FORMAT RULES:
             content, _, _ = ai_chat_with_fallback(
                 messages=[{"role": "user", "content": code_prompt}],
                 temperature=0.3,
-                max_tokens=700,
+                max_tokens=1200,
                 model=get_purpose_model("code", message.chat.id)
             )
 
@@ -3056,20 +3060,23 @@ OUTPUT FORMAT RULES:
             )
             analysis = clean_markdown(analysis)
 
-            result_text = f"💻 *Code Analysis:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
+            result_text = f"💻 *Code Solution:*\n\n{analysis}\n\n🔧 *Powered by Artovix AI*"
             save_last_ai_reply(message.chat.id, result_text)
             send_ai_reply(message.chat.id, result_text, reply_markup=maybe_followup_markup(result_text))
 
         except Exception as api_error:
             logger.error(f"Code API error: {api_error}")
-            safe_send_message(
-                message.chat.id,
-                f"💻 *Question:* {code_text}\n\n"
-                f"I can help with that! Try:\n"
-                f"1. Be more specific about your code issue\n"
-                f"2. Send the actual code in ```code blocks```\n"
-                f"3. Ask about a specific programming language"
-            )
+            err_msg = str(api_error)
+            if message.chat.id in ADMIN_USER_IDS:
+                safe_send_message(
+                    message.chat.id,
+                    f"⚠️ *Code Error (Admin Info):*\n`{err_msg[:400]}`"
+                )
+            else:
+                safe_send_message(
+                    message.chat.id,
+                    "💻 *Code generation encountered a temporary glitch.* Please try again!"
+                )
         
         analytics.log_request(message.chat.id, len(code_text.split()), "code_analysis")
         

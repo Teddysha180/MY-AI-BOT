@@ -119,13 +119,12 @@ LOG_FILE = data_path("artovix.log")
 STICKERS_STORE_FILE = data_path("stickers_vault.json")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_KEY = None  # Groq removed — using NVIDIA NIM exclusively
+GROQ_KEY = os.getenv("GROQ_KEY") or os.getenv("GROQ_API_KEY")  # Silent fallback when NVIDIA exhausted
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_KEY") or os.getenv("NVAPI_KEY")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 HF_KEY = os.getenv("HF_API_KEY")
 
-# AI provider: NVIDIA NIM exclusively
-DEFAULT_AI_PROVIDER = "nvidia"
+# Provider: NVIDIA primary, Groq silent fallback
 AI_PROVIDER = "nvidia"
 
 def normalize_chat_model(model, default):
@@ -152,14 +151,10 @@ CHAT_MODEL_CURRENT = normalize_chat_model(
     DEFAULT_CHAT_CURRENT
 )
 VISION_MODEL = (
-    os.getenv("VISION_MODEL")
-    or os.getenv("NVIDIA_VISION_MODEL")
-    or DEFAULT_VISION_MODEL
+    os.getenv("VISION_MODEL") or os.getenv("NVIDIA_VISION_MODEL") or DEFAULT_VISION_MODEL
 )
 VISION_MODEL_FALLBACK = (
-    os.getenv("VISION_MODEL_FALLBACK")
-    or os.getenv("NVIDIA_VISION_MODEL_FALLBACK")
-    or DEFAULT_VISION_FALLBACK
+    os.getenv("VISION_MODEL_FALLBACK") or os.getenv("NVIDIA_VISION_MODEL_FALLBACK") or DEFAULT_VISION_FALLBACK
 )
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "https://t.me/arts_of_drawings")
 REQUIRED_CHANNEL = (os.getenv("REQUIRED_CHANNEL") or "@arts_of_drawings").strip()
@@ -189,7 +184,7 @@ GROQ_RETRY_BACKOFF_SEC = AI_RETRY_BACKOFF_SEC
 
 # Initialize clients
 nvidia_client  = None
-groq_client    = None   # Groq removed — NVIDIA NIM is the sole provider
+groq_client    = None   # Silent fallback when NVIDIA credits run out
 pollinations_client = None  # Image-only; never used for text
 
 if NVIDIA_API_KEY:
@@ -199,15 +194,20 @@ if NVIDIA_API_KEY:
             print("✅ NVIDIA NIM client initialized successfully.")
         except Exception as e:
             print(f"⚠️ NVIDIA NIM client init warning: {e}")
-            logger = logging.getLogger(__name__)
-            logger.warning(f"NVIDIA NIM client init failed: {e}")
             nvidia_client = None
     else:
         print("⚠️ openai package not installed; NVIDIA NIM client cannot initialize.")
-else:
-    print("⚠️ NVIDIA_API_KEY not configured — bot will not respond to chat messages.")
 
-if not nvidia_client:
+if GROQ_KEY:
+    if Groq:
+        try:
+            groq_client = Groq(api_key=GROQ_KEY, timeout=20.0)
+            print("✅ Groq fallback client initialized (silent backup).")
+        except Exception as e:
+            print(f"⚠️ Groq fallback client init warning: {e}")
+            groq_client = None
+
+if not nvidia_client and not groq_client:
     print("⚠️ No AI backend available. Set NVIDIA_API_KEY in Render environment variables.")
 
 if BOT_TOKEN:
@@ -1859,70 +1859,101 @@ def is_fatal_model_error(exc: Exception) -> bool:
 is_transient_ai_error = is_transient_groq_error
 
 def ai_chat_with_fallback(messages, temperature=0.7, max_tokens=400, model=None):
-    """NVIDIA NIM exclusive chat with waterfall model fallback."""
-    if not nvidia_client:
+    """NVIDIA NIM primary → Groq silent fallback → all models exhausted."""
+    if not nvidia_client and not groq_client:
         raise RuntimeError("No AI client configured. Set NVIDIA_API_KEY in Render environment variables.")
 
-    # NVIDIA NIM waterfall — ordered best → fastest (all verified Nov 2026)
-    _raw_candidates = [
-        model if (model and "/" in model) else None,
-        CHAT_MODEL if "/" in CHAT_MODEL else None,
-        "meta/llama-3.3-70b-instruct",
-        "meta/llama-3.1-70b-instruct",
-        "meta/llama-3.1-8b-instruct",
-        "meta/llama-3.2-3b-instruct",
-        "mistralai/mistral-nemo-12b-instruct",
-        "mistralai/mistral-7b-instruct-v0.3",
-        "google/gemma-3-12b-it",
-        "google/gemma-3-4b-it",
-        "microsoft/phi-3-mini-128k-instruct",
-        "meta/llama-3.2-1b-instruct",
-        CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
-    ]
-    seen = set()
-    models = [m for m in _raw_candidates
-              if m and m not in seen and not seen.add(m)
-              and ("nvidia", m) not in _DEAD_MODELS]
+    # ── Provider order: NVIDIA first, Groq as silent backup ──────────────────
+    providers = []
+    if nvidia_client:
+        nvidia_candidates = [
+            model if (model and "/" in model) else None,
+            CHAT_MODEL if "/" in CHAT_MODEL else None,
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-70b-instruct",
+            "meta/llama-3.1-8b-instruct",
+            "meta/llama-3.2-3b-instruct",
+            "mistralai/mistral-nemo-12b-instruct",
+            "mistralai/mistral-7b-instruct-v0.3",
+            "google/gemma-3-12b-it",
+            "google/gemma-3-4b-it",
+            "microsoft/phi-3-mini-128k-instruct",
+            "meta/llama-3.2-1b-instruct",
+            CHAT_MODEL_FALLBACK if "/" in CHAT_MODEL_FALLBACK else None,
+        ]
+        providers.append(("nvidia", nvidia_client, nvidia_candidates))
+
+    if groq_client:
+        groq_candidates = [
+            model if (model and "/" not in model) else None,
+            "llama-3.3-70b-versatile",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "gemma2-9b-it",
+            "mixtral-8x7b-32768",
+            "llama-3.2-3b-preview",
+            "llama-3.2-1b-preview",
+        ]
+        providers.append(("groq", groq_client, groq_candidates))
 
     last_error = None
-    for mod in models:
-        for attempt in range(1, AI_TRANSIENT_RETRIES + 1):
-            try:
-                response = nvidia_client.chat.completions.create(
-                    model=mod,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=15.0
-                )
-                choice = response.choices[0] if response and response.choices else None
-                content = None
-                if choice:
-                    raw_content = getattr(choice.message, "content", None) or ""
-                    content = strip_thinking_process(raw_content).strip() if raw_content else None
-                finish_reason = getattr(choice, "finish_reason", None) if choice else None
-                if content:
-                    return content, mod, finish_reason
-                logger.warning(f"NVIDIA model '{mod}' returned empty content. Skipping.")
-                break
-            except Exception as e:
-                last_error = e
-                if is_fatal_model_error(e):
-                    _DEAD_MODELS.add(("nvidia", mod))
-                    logger.warning(f"NVIDIA model '{mod}' fatal (404/410). Marked dead.")
-                    break
-                err_txt = str(e).lower()
-                if "timed out" in err_txt or "timeout" in err_txt:
-                    logger.warning(f"NVIDIA model '{mod}' timed out. Trying next.")
-                    break
-                should_retry = is_transient_ai_error(e) and attempt < AI_TRANSIENT_RETRIES
-                logger.warning(f"NVIDIA model failed ({mod}, attempt {attempt}): {e}")
-                if should_retry:
-                    time.sleep(AI_RETRY_BACKOFF_SEC * attempt)
-                    continue
-                break
+    for provider_name, client, raw_candidates in providers:
+        seen = set()
+        models = [m for m in raw_candidates
+                  if m and m not in seen and not seen.add(m)
+                  and (provider_name, m) not in _DEAD_MODELS]
 
-    raise last_error if last_error else RuntimeError("All NVIDIA NIM models failed. Check NVIDIA_API_KEY.")
+        for mod in models:
+            for attempt in range(1, AI_TRANSIENT_RETRIES + 1):
+                try:
+                    response = client.chat.completions.create(
+                        model=mod,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=15.0
+                    )
+                    choice = response.choices[0] if response and response.choices else None
+                    content = None
+                    if choice:
+                        raw_content = getattr(choice.message, "content", None) or ""
+                        content = strip_thinking_process(raw_content).strip() if raw_content else None
+                    finish_reason = getattr(choice, "finish_reason", None) if choice else None
+                    if content:
+                        return content, mod, finish_reason
+                    logger.warning(f"{provider_name} model '{mod}' returned empty. Skipping.")
+                    break
+                except Exception as e:
+                    last_error = e
+                    if is_fatal_model_error(e):
+                        _DEAD_MODELS.add((provider_name, mod))
+                        logger.warning(f"{provider_name} model '{mod}' fatal (404/410). Marked dead.")
+                        break
+                    err_txt = str(e).lower()
+                    if "timed out" in err_txt or "timeout" in err_txt:
+                        logger.warning(f"{provider_name} model '{mod}' timed out. Trying next.")
+                        break
+                    # For exhausted/auth errors on NVIDIA, skip to Groq immediately
+                    sc = getattr(e, "status_code", None)
+                    if sc in {401, 402, 403, 410} or any(t in err_txt for t in ("credit", "exhausted", "quota", "unauthorized")):
+                        logger.warning(f"{provider_name} key issue (status {sc}). Skipping provider.")
+                        break
+                    should_retry = is_transient_ai_error(e) and attempt < AI_TRANSIENT_RETRIES
+                    logger.warning(f"{provider_name} model failed ({mod}, attempt {attempt}): {e}")
+                    if should_retry:
+                        time.sleep(AI_RETRY_BACKOFF_SEC * attempt)
+                        continue
+                    break
+            else:
+                continue
+            # If we hit a key-level fatal error, skip remaining models in this provider
+            if last_error:
+                sc = getattr(last_error, "status_code", None)
+                err_txt = str(last_error).lower()
+                if sc in {401, 402, 403, 410} or any(t in err_txt for t in ("credit", "exhausted", "quota", "unauthorized")):
+                    break  # Move to next provider
+
+    raise last_error if last_error else RuntimeError("All AI models failed.")
 
 groq_chat_with_fallback = ai_chat_with_fallback  # alias kept for compatibility
 
@@ -4912,26 +4943,14 @@ def handle_all_messages(message):
             try:
                 err = str(api_error).lower()
                 status_code = getattr(api_error, "status_code", None)
-                if status_code == 410 or any(term in err for term in ("410", "gone", "decommissioned")):
-                    user_msg = (
-                        "🔑 *NVIDIA API credits exhausted.*\n\n"
-                        "Please get a free **Groq API key** at console.groq.com and add it as `GROQ_API_KEY` in your Render dashboard."
-                    )
+                if status_code == 410 or any(term in err for term in ("410", "gone", "decommissioned", "credit", "exhausted")):
+                    user_msg = "🔄 *Switching AI engine...* Please send your message again in a moment."
                 elif status_code == 402 or any(term in err for term in ("402", "free limit reached", "payment required")):
-                    user_msg = (
-                        "⏳ *AI free tier limit reached.*\n\n"
-                        "Please wait a moment and try again."
-                    )
+                    user_msg = "⏳ *AI is busy.* Please wait a few seconds and try again."
                 elif status_code == 429 or any(term in err for term in ("rate limit", "rate_limit", "too many requests", "quota")):
-                    user_msg = (
-                        "⏳ *Too many requests right now.*\n\n"
-                        "Please wait 10-20 seconds and try again."
-                    )
+                    user_msg = "⏳ *Too many requests.* Please wait 10-20 seconds and try again."
                 elif status_code in {401, 403} or any(term in err for term in ("api key", "api_key", "unauthorized", "authentication", "invalid bearer", "forbidden", "authorization failed")):
-                    user_msg = (
-                        "🔐 *AI key permission issue detected.*\n\n"
-                        "If using NVIDIA, ensure your key has **'Public API Endpoints'** enabled on build.nvidia.com, or check `NVIDIA_API_KEY`."
-                    )
+                    user_msg = "🔄 *Switching AI engine...* Please send your message again in a moment."
                 elif status_code in {404, 400} or any(term in err for term in (
                     "not found", "decommissioned", "not available", "unsupported",
                     "404", "model_not_found", "does not exist", "no such model"
